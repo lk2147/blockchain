@@ -1,7 +1,10 @@
-# Test status — Stage 5, 2026-11-09
+# Test status — Stage 6, 2026-11-09
 
 The named real-process T1-T8 suite is implemented and passed both normal and
-race-enabled runs. Stage 6 submission preparation remains unfinished.
+race-enabled runs. The final Stage 6 race-enabled full suite also passed all
+203 tests/subtests, formatting and vet. The separate Python repeatability command
+passed. Selected raw evidence is in logs/evidence; see STAGE6.md for provenance,
+archive checks and the review boundary.
 
 ## Actual complete-suite results
 
@@ -63,9 +66,10 @@ Evidence: local-runs/stage5-cli-smoke. Observed injections were 190 drops,
 251 duplicates, 220 reorder holds and 297 replays, plus 73 retried send errors.
 These are observed counts, not fixed predictions for another real run.
 
-## Still incomplete
+## Review boundary and limitations
 
-Stage 6's submission report, archive/structure verification and final evidence
-selection remain. Safe crash recovery/restart, encrypted remote deployment,
+Stage 6 prepared the report, archive/structure verification and final evidence.
+The student must still review the report and demonstrate understanding before
+submission. Safe crash recovery/restart, encrypted remote deployment,
 production readiness and exhaustive exploration of all Byzantine schedules are
 not claimed. T6 tests crash tolerance of the surviving cluster, not restart safety.

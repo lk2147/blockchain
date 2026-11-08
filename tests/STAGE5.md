@@ -189,7 +189,8 @@ import; these were fixed before successful runs. Assertions were not weakened.
 - T8 compares ordered effects/state under controlled inputs, not timestamps or
   incidental socket arrivals, following the student's approved interpretation.
 
-Stage 6 still needs final submission preparation, evidence selection, report,
-archive/structure verification and student review. Safe crash recovery, encrypted
+At this stage boundary, Stage 6 still needed submission preparation and review.
+The student subsequently authorized Stage 6; STAGE6.md records its final checks,
+report, selected evidence and archive. Safe crash recovery, encrypted
 remote/public deployment, dynamic membership and production readiness remain
-outside the implemented scope. Stop here for review before Stage 6.
+outside the implemented scope. Student review remains required before submission.

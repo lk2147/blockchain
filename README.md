@@ -11,7 +11,9 @@ and finalizes its own ledger and Merkle state commitment.
 - The installed Go toolchain matching go.mod; keep the pinned dependencies.
 - Available localhost TCP ports (default: 29000 through 29009).
 
-Open any terminal in the repository root, `D:/applied-blockchain/blockchain`.
+Open any terminal in the repository root (the folder containing go.mod and this
+README; for example, `D:/applied-blockchain/blockchain`, or the extracted
+`blockchain` folder).
 All commands below use Python or Go directly; no shell-specific helper is needed.
 
 ## Quick start: launch all ten nodes
@@ -182,7 +184,39 @@ signed client inputs. Dynamic membership and safe restart/recovery are not imple
 
 See [real networking](tests/REAL_NETWORK.md) and [Stage 4](tests/STAGE4.md).
 Stage 5's real-network T1-T8 suite has passed normal and race-enabled runs.
-Stage 6 submission preparation, report and archive remain incomplete.
+Stage 6 includes a review report, selected raw evidence and a source archive.
+Read [the report](report/REPORT.md) and [Stage 6 checks](tests/STAGE6.md).
+The student must review the explanations before submission.
+
+## Repeatability and submission
+
+Run only the controlled rerun experiment (two independent ten-process clusters):
+
+```text
+python tests/verify_repeatability.py
+```
+
+Optional arguments are --go, --race and --output (a fresh evidence directory).
+This checks signed transaction order and final state, plus the Go T8 invariants;
+it does not compare timestamps or incidental network log order.
+
+Selected observed evidence is under logs/evidence, without private keys.
+See logs/README.md for provenance and interpretation. Generate new experiments
+with the scripts rather than attempting to restart recorded runs.
+
+To build a fresh ZIP after reviewing the project:
+
+```text
+python tests/package_submission.py
+```
+
+The output is submission/blockchain.zip with a blockchain/ root, a per-file
+SHA-256 manifest and a separate archive checksum. Existing archives are not
+overwritten; use --output submission/another-name.zip for another copy. The
+archive includes source, tests, documentation and selected logs, and excludes
+local-runs, private key files and executables. After extracting, open a terminal
+in the extracted blockchain folder and use the same quick-start/test commands.
+The Python packaging script uses the standard library only.
 
 ## Protobuf maintenance
 

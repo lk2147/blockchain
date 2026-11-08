@@ -35,7 +35,10 @@ go.work.sum
 # Project file
 Lab01.pdf
 REPORT.md
+!/report/REPORT.md
 
 # Generated local clusters contain private keys and runtime output.
 /local-runs/
+/submission/
+__pycache__/
 key-*.hex

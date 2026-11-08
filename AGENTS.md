@@ -512,9 +512,13 @@ If a requirement cannot be completed, state that clearly. Never mark an incomple
 
 # Current workflow and handoff
 
-Stages 0-4 were reviewed with the student. Stage 5's real-process T1-T8 suite has
-passed normal and race-enabled runs and is ready for student review. Stage 6
-has not started and is not automatically authorized. Do not restart Stage 0 solely because an
+Stages 0-5 were reviewed/advanced with the student, who explicitly authorized
+Stage 6. Stage 6 prepared the review report, selected raw evidence, Python-only
+repeatability/packaging scripts and verified source archive. The final full
+race-enabled suite passed all T1-T8 (203 tests/subtests), formatting and vet;
+the separate Python rerun check passed too. See tests/STAGE6.md for exact
+evidence and archive checks. Student report review/understanding remains a human
+acceptance step: do not claim it is completed or submit externally. Do not restart Stage 0 solely because an
 earlier instruction said to begin with an audit. Inspect relevant existing code
 before the requested stage, preserve completed work, and follow the student's
 latest explicit approval. Use `python tests/run_tests.py` for all scenarios and

@@ -40,5 +40,5 @@ Actual checks: gofmt clean; go test ./... -count=1 passed; go test -race ./...
 The launcher itself was also executed successfully with ten node.exe processes.
 
 This was the Stage 4 review boundary. Stage 5 subsequently added the real T1-T8
-suite and controlled reruns; see STAGE5.md. Stage 6 report/submission preparation
-is still pending.
+suite and controlled reruns; see STAGE5.md. Stage 6 subsequently prepared the
+report, evidence and archive; see STAGE6.md for final checks and student review.
