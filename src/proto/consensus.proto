@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package blockchain;
+
+// Tells protoc to drop the generated Go code directly into your src/proto folder
+option go_package = "local-blockchain/src/proto";
+
+message Transaction {
+    string sender = 1;
+    string recipient = 2;
+    int64 amount = 3;
+    bytes signature = 4;
+}
+
+message Block {
+    int64 index = 1;
+    string previous_hash = 2;
+    int64 timestamp = 3;
+    repeated Transaction transactions = 4;
+    int64 nonce = 5;
+    string hash = 6;
+}
+
+service NodeService {
+    rpc BroadcastBlock(Block) returns (BroadcastResponse);
+    rpc SendTransaction(Transaction) returns (TransactionResponse);
+}
+
+message BroadcastResponse { bool success = 1; }
+message TransactionResponse { string status = 1; }
