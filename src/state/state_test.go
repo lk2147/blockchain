@@ -170,34 +170,25 @@ func TestCommitmentCanonicalAndDeterministic(t *testing.T) {
 	if other == root(t, x) {
 		t.Fatal("state domain lacks chain")
 	}
-	// Independent hand-written bytes: version, context, two records sorted a,z,
-	// then two public keys sorted by raw bytes with their uint64 nonce values.
+	// Independent hand-written leaf bytes: records a,z then sender keys 1,2.
 	s := State{records: map[string][]byte{"z": {2}, "a": {1}}, nonces: map[types.PublicKey]uint64{{2}: 9, {1}: 8}}
-	wantHex := "010000000753544154453a630000000200000001610000000101000000017a00000001020000000201" + strings.Repeat("00", 31) + "000000000000000802" + strings.Repeat("00", 31) + "0000000000000009"
-	want, err := hex.DecodeString(wantHex)
+	wantHex := []string{"0000000001610000000101", "00000000017a0000000102", "0101" + strings.Repeat("00", 31) + "0000000000000008", "0102" + strings.Repeat("00", 31) + "0000000000000009"}
+	got, err := s.CanonicalLeaves()
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.CanonicalBytes("c")
-	if err != nil {
-		t.Fatal(err)
+	if len(got) != len(wantHex) {
+		t.Fatal("wrong leaf count")
 	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("state bytes = %x", got)
+	for i, want := range wantHex {
+		if hex.EncodeToString(got[i]) != want {
+			t.Fatalf("leaf %d = %x", i, got[i])
+		}
 	}
-	r, err := s.Root("c")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r != crypt.HashBytes(want) {
-		t.Fatal("root does not hash canonical bytes")
-	}
-	empty, err := (State{}).CanonicalBytes("c")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hex.EncodeToString(empty) != "010000000753544154453a630000000000000000" {
-		t.Fatalf("empty encoding = %x", empty)
+	before := root(t, s)
+	got[0][0] ^= 1
+	if root(t, s) != before {
+		t.Fatal("leaf encoding exposes state memory")
 	}
 }
 
