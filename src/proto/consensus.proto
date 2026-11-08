@@ -2,29 +2,23 @@ syntax = "proto3";
 
 package blockchain;
 
-// Tells protoc to drop the generated Go code directly into your src/proto folder
-option go_package = "local-blockchain/src/proto";
+option go_package = "blockchain-lab01/src/proto";
 
-message Transaction {
-    string sender = 1;
-    string recipient = 2;
-    int64 amount = 3;
-    bytes signature = 4;
+// Transport bytes only. Protocol types/validation remain in ordinary Go code.
+// Signatures use canonical TRANSPORT bytes, never arbitrary protobuf encoding.
+message Envelope {
+    string chain_id = 1;
+    uint32 sender = 2;
+    uint32 recipient = 3;
+    uint64 sequence = 4;
+    string kind = 5;
+    bytes reference = 6;
+    uint64 height = 7;
+    uint64 round = 8;
+    bytes payload = 9;
+    bytes signature = 10;
 }
-
-message Block {
-    int64 index = 1;
-    string previous_hash = 2;
-    int64 timestamp = 3;
-    repeated Transaction transactions = 4;
-    int64 nonce = 5;
-    string hash = 6;
+message Ack {}
+service Transport {
+    rpc Deliver(Envelope) returns (Ack);
 }
-
-service NodeService {
-    rpc BroadcastBlock(Block) returns (BroadcastResponse);
-    rpc SendTransaction(Transaction) returns (TransactionResponse);
-}
-
-message BroadcastResponse { bool success = 1; }
-message TransactionResponse { string status = 1; }

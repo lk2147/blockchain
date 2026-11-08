@@ -19,139 +19,101 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NodeService_BroadcastBlock_FullMethodName  = "/blockchain.NodeService/BroadcastBlock"
-	NodeService_SendTransaction_FullMethodName = "/blockchain.NodeService/SendTransaction"
+	Transport_Deliver_FullMethodName = "/blockchain.Transport/Deliver"
 )
 
-// NodeServiceClient is the client API for NodeService service.
+// TransportClient is the client API for Transport service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type NodeServiceClient interface {
-	BroadcastBlock(ctx context.Context, in *Block, opts ...grpc.CallOption) (*BroadcastResponse, error)
-	SendTransaction(ctx context.Context, in *Transaction, opts ...grpc.CallOption) (*TransactionResponse, error)
+type TransportClient interface {
+	Deliver(ctx context.Context, in *Envelope, opts ...grpc.CallOption) (*Ack, error)
 }
 
-type nodeServiceClient struct {
+type transportClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewNodeServiceClient(cc grpc.ClientConnInterface) NodeServiceClient {
-	return &nodeServiceClient{cc}
+func NewTransportClient(cc grpc.ClientConnInterface) TransportClient {
+	return &transportClient{cc}
 }
 
-func (c *nodeServiceClient) BroadcastBlock(ctx context.Context, in *Block, opts ...grpc.CallOption) (*BroadcastResponse, error) {
+func (c *transportClient) Deliver(ctx context.Context, in *Envelope, opts ...grpc.CallOption) (*Ack, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BroadcastResponse)
-	err := c.cc.Invoke(ctx, NodeService_BroadcastBlock_FullMethodName, in, out, cOpts...)
+	out := new(Ack)
+	err := c.cc.Invoke(ctx, Transport_Deliver_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *nodeServiceClient) SendTransaction(ctx context.Context, in *Transaction, opts ...grpc.CallOption) (*TransactionResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(TransactionResponse)
-	err := c.cc.Invoke(ctx, NodeService_SendTransaction_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// NodeServiceServer is the server API for NodeService service.
-// All implementations must embed UnimplementedNodeServiceServer
+// TransportServer is the server API for Transport service.
+// All implementations must embed UnimplementedTransportServer
 // for forward compatibility.
-type NodeServiceServer interface {
-	BroadcastBlock(context.Context, *Block) (*BroadcastResponse, error)
-	SendTransaction(context.Context, *Transaction) (*TransactionResponse, error)
-	mustEmbedUnimplementedNodeServiceServer()
+type TransportServer interface {
+	Deliver(context.Context, *Envelope) (*Ack, error)
+	mustEmbedUnimplementedTransportServer()
 }
 
-// UnimplementedNodeServiceServer must be embedded to have
+// UnimplementedTransportServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedNodeServiceServer struct{}
+type UnimplementedTransportServer struct{}
 
-func (UnimplementedNodeServiceServer) BroadcastBlock(context.Context, *Block) (*BroadcastResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method BroadcastBlock not implemented")
+func (UnimplementedTransportServer) Deliver(context.Context, *Envelope) (*Ack, error) {
+	return nil, status.Error(codes.Unimplemented, "method Deliver not implemented")
 }
-func (UnimplementedNodeServiceServer) SendTransaction(context.Context, *Transaction) (*TransactionResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method SendTransaction not implemented")
-}
-func (UnimplementedNodeServiceServer) mustEmbedUnimplementedNodeServiceServer() {}
-func (UnimplementedNodeServiceServer) testEmbeddedByValue()                     {}
+func (UnimplementedTransportServer) mustEmbedUnimplementedTransportServer() {}
+func (UnimplementedTransportServer) testEmbeddedByValue()                   {}
 
-// UnsafeNodeServiceServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to NodeServiceServer will
+// UnsafeTransportServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to TransportServer will
 // result in compilation errors.
-type UnsafeNodeServiceServer interface {
-	mustEmbedUnimplementedNodeServiceServer()
+type UnsafeTransportServer interface {
+	mustEmbedUnimplementedTransportServer()
 }
 
-func RegisterNodeServiceServer(s grpc.ServiceRegistrar, srv NodeServiceServer) {
-	// If the following call panics, it indicates UnimplementedNodeServiceServer was
+func RegisterTransportServer(s grpc.ServiceRegistrar, srv TransportServer) {
+	// If the following call panics, it indicates UnimplementedTransportServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&NodeService_ServiceDesc, srv)
+	s.RegisterService(&Transport_ServiceDesc, srv)
 }
 
-func _NodeService_BroadcastBlock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(Block)
+func _Transport_Deliver_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Envelope)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(NodeServiceServer).BroadcastBlock(ctx, in)
+		return srv.(TransportServer).Deliver(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: NodeService_BroadcastBlock_FullMethodName,
+		FullMethod: Transport_Deliver_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeServiceServer).BroadcastBlock(ctx, req.(*Block))
+		return srv.(TransportServer).Deliver(ctx, req.(*Envelope))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _NodeService_SendTransaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(Transaction)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeServiceServer).SendTransaction(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeService_SendTransaction_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeServiceServer).SendTransaction(ctx, req.(*Transaction))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-// NodeService_ServiceDesc is the grpc.ServiceDesc for NodeService service.
+// Transport_ServiceDesc is the grpc.ServiceDesc for Transport service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var NodeService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "blockchain.NodeService",
-	HandlerType: (*NodeServiceServer)(nil),
+var Transport_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "blockchain.Transport",
+	HandlerType: (*TransportServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "BroadcastBlock",
-			Handler:    _NodeService_BroadcastBlock_Handler,
-		},
-		{
-			MethodName: "SendTransaction",
-			Handler:    _NodeService_SendTransaction_Handler,
+			MethodName: "Deliver",
+			Handler:    _Transport_Deliver_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

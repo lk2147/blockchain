@@ -21,30 +21,38 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type Transaction struct {
+// Transport bytes only. Protocol types/validation remain in ordinary Go code.
+// Signatures use canonical TRANSPORT bytes, never arbitrary protobuf encoding.
+type Envelope struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Sender        string                 `protobuf:"bytes,1,opt,name=sender,proto3" json:"sender,omitempty"`
-	Recipient     string                 `protobuf:"bytes,2,opt,name=recipient,proto3" json:"recipient,omitempty"`
-	Amount        int64                  `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
-	Signature     []byte                 `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`
+	ChainId       string                 `protobuf:"bytes,1,opt,name=chain_id,json=chainId,proto3" json:"chain_id,omitempty"`
+	Sender        uint32                 `protobuf:"varint,2,opt,name=sender,proto3" json:"sender,omitempty"`
+	Recipient     uint32                 `protobuf:"varint,3,opt,name=recipient,proto3" json:"recipient,omitempty"`
+	Sequence      uint64                 `protobuf:"varint,4,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Kind          string                 `protobuf:"bytes,5,opt,name=kind,proto3" json:"kind,omitempty"`
+	Reference     []byte                 `protobuf:"bytes,6,opt,name=reference,proto3" json:"reference,omitempty"`
+	Height        uint64                 `protobuf:"varint,7,opt,name=height,proto3" json:"height,omitempty"`
+	Round         uint64                 `protobuf:"varint,8,opt,name=round,proto3" json:"round,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,9,opt,name=payload,proto3" json:"payload,omitempty"`
+	Signature     []byte                 `protobuf:"bytes,10,opt,name=signature,proto3" json:"signature,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Transaction) Reset() {
-	*x = Transaction{}
+func (x *Envelope) Reset() {
+	*x = Envelope{}
 	mi := &file_src_proto_consensus_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Transaction) String() string {
+func (x *Envelope) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Transaction) ProtoMessage() {}
+func (*Envelope) ProtoMessage() {}
 
-func (x *Transaction) ProtoReflect() protoreflect.Message {
+func (x *Envelope) ProtoReflect() protoreflect.Message {
 	mi := &file_src_proto_consensus_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -56,65 +64,101 @@ func (x *Transaction) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Transaction.ProtoReflect.Descriptor instead.
-func (*Transaction) Descriptor() ([]byte, []int) {
+// Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
+func (*Envelope) Descriptor() ([]byte, []int) {
 	return file_src_proto_consensus_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *Transaction) GetSender() string {
+func (x *Envelope) GetChainId() string {
+	if x != nil {
+		return x.ChainId
+	}
+	return ""
+}
+
+func (x *Envelope) GetSender() uint32 {
 	if x != nil {
 		return x.Sender
-	}
-	return ""
-}
-
-func (x *Transaction) GetRecipient() string {
-	if x != nil {
-		return x.Recipient
-	}
-	return ""
-}
-
-func (x *Transaction) GetAmount() int64 {
-	if x != nil {
-		return x.Amount
 	}
 	return 0
 }
 
-func (x *Transaction) GetSignature() []byte {
+func (x *Envelope) GetRecipient() uint32 {
+	if x != nil {
+		return x.Recipient
+	}
+	return 0
+}
+
+func (x *Envelope) GetSequence() uint64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
+func (x *Envelope) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *Envelope) GetReference() []byte {
+	if x != nil {
+		return x.Reference
+	}
+	return nil
+}
+
+func (x *Envelope) GetHeight() uint64 {
+	if x != nil {
+		return x.Height
+	}
+	return 0
+}
+
+func (x *Envelope) GetRound() uint64 {
+	if x != nil {
+		return x.Round
+	}
+	return 0
+}
+
+func (x *Envelope) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *Envelope) GetSignature() []byte {
 	if x != nil {
 		return x.Signature
 	}
 	return nil
 }
 
-type Block struct {
+type Ack struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Index         int64                  `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
-	PreviousHash  string                 `protobuf:"bytes,2,opt,name=previous_hash,json=previousHash,proto3" json:"previous_hash,omitempty"`
-	Timestamp     int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	Transactions  []*Transaction         `protobuf:"bytes,4,rep,name=transactions,proto3" json:"transactions,omitempty"`
-	Nonce         int64                  `protobuf:"varint,5,opt,name=nonce,proto3" json:"nonce,omitempty"`
-	Hash          string                 `protobuf:"bytes,6,opt,name=hash,proto3" json:"hash,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Block) Reset() {
-	*x = Block{}
+func (x *Ack) Reset() {
+	*x = Ack{}
 	mi := &file_src_proto_consensus_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Block) String() string {
+func (x *Ack) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Block) ProtoMessage() {}
+func (*Ack) ProtoMessage() {}
 
-func (x *Block) ProtoReflect() protoreflect.Message {
+func (x *Ack) ProtoReflect() protoreflect.Message {
 	mi := &file_src_proto_consensus_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -126,139 +170,9 @@ func (x *Block) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Block.ProtoReflect.Descriptor instead.
-func (*Block) Descriptor() ([]byte, []int) {
+// Deprecated: Use Ack.ProtoReflect.Descriptor instead.
+func (*Ack) Descriptor() ([]byte, []int) {
 	return file_src_proto_consensus_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *Block) GetIndex() int64 {
-	if x != nil {
-		return x.Index
-	}
-	return 0
-}
-
-func (x *Block) GetPreviousHash() string {
-	if x != nil {
-		return x.PreviousHash
-	}
-	return ""
-}
-
-func (x *Block) GetTimestamp() int64 {
-	if x != nil {
-		return x.Timestamp
-	}
-	return 0
-}
-
-func (x *Block) GetTransactions() []*Transaction {
-	if x != nil {
-		return x.Transactions
-	}
-	return nil
-}
-
-func (x *Block) GetNonce() int64 {
-	if x != nil {
-		return x.Nonce
-	}
-	return 0
-}
-
-func (x *Block) GetHash() string {
-	if x != nil {
-		return x.Hash
-	}
-	return ""
-}
-
-type BroadcastResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *BroadcastResponse) Reset() {
-	*x = BroadcastResponse{}
-	mi := &file_src_proto_consensus_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *BroadcastResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*BroadcastResponse) ProtoMessage() {}
-
-func (x *BroadcastResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_src_proto_consensus_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use BroadcastResponse.ProtoReflect.Descriptor instead.
-func (*BroadcastResponse) Descriptor() ([]byte, []int) {
-	return file_src_proto_consensus_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *BroadcastResponse) GetSuccess() bool {
-	if x != nil {
-		return x.Success
-	}
-	return false
-}
-
-type TransactionResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TransactionResponse) Reset() {
-	*x = TransactionResponse{}
-	mi := &file_src_proto_consensus_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TransactionResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TransactionResponse) ProtoMessage() {}
-
-func (x *TransactionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_src_proto_consensus_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TransactionResponse.ProtoReflect.Descriptor instead.
-func (*TransactionResponse) Descriptor() ([]byte, []int) {
-	return file_src_proto_consensus_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *TransactionResponse) GetStatus() string {
-	if x != nil {
-		return x.Status
-	}
-	return ""
 }
 
 var File_src_proto_consensus_proto protoreflect.FileDescriptor
@@ -266,26 +180,22 @@ var File_src_proto_consensus_proto protoreflect.FileDescriptor
 const file_src_proto_consensus_proto_rawDesc = "" +
 	"\n" +
 	"\x19src/proto/consensus.proto\x12\n" +
-	"blockchain\"y\n" +
-	"\vTransaction\x12\x16\n" +
-	"\x06sender\x18\x01 \x01(\tR\x06sender\x12\x1c\n" +
-	"\trecipient\x18\x02 \x01(\tR\trecipient\x12\x16\n" +
-	"\x06amount\x18\x03 \x01(\x03R\x06amount\x12\x1c\n" +
-	"\tsignature\x18\x04 \x01(\fR\tsignature\"\xc7\x01\n" +
-	"\x05Block\x12\x14\n" +
-	"\x05index\x18\x01 \x01(\x03R\x05index\x12#\n" +
-	"\rprevious_hash\x18\x02 \x01(\tR\fpreviousHash\x12\x1c\n" +
-	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\x12;\n" +
-	"\ftransactions\x18\x04 \x03(\v2\x17.blockchain.TransactionR\ftransactions\x12\x14\n" +
-	"\x05nonce\x18\x05 \x01(\x03R\x05nonce\x12\x12\n" +
-	"\x04hash\x18\x06 \x01(\tR\x04hash\"-\n" +
-	"\x11BroadcastResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"-\n" +
-	"\x13TransactionResponse\x12\x16\n" +
-	"\x06status\x18\x01 \x01(\tR\x06status2\x9e\x01\n" +
-	"\vNodeService\x12B\n" +
-	"\x0eBroadcastBlock\x12\x11.blockchain.Block\x1a\x1d.blockchain.BroadcastResponse\x12K\n" +
-	"\x0fSendTransaction\x12\x17.blockchain.Transaction\x1a\x1f.blockchain.TransactionResponseB\x1cZ\x1alocal-blockchain/src/protob\x06proto3"
+	"blockchain\"\x8f\x02\n" +
+	"\bEnvelope\x12\x19\n" +
+	"\bchain_id\x18\x01 \x01(\tR\achainId\x12\x16\n" +
+	"\x06sender\x18\x02 \x01(\rR\x06sender\x12\x1c\n" +
+	"\trecipient\x18\x03 \x01(\rR\trecipient\x12\x1a\n" +
+	"\bsequence\x18\x04 \x01(\x04R\bsequence\x12\x12\n" +
+	"\x04kind\x18\x05 \x01(\tR\x04kind\x12\x1c\n" +
+	"\treference\x18\x06 \x01(\fR\treference\x12\x16\n" +
+	"\x06height\x18\a \x01(\x04R\x06height\x12\x14\n" +
+	"\x05round\x18\b \x01(\x04R\x05round\x12\x18\n" +
+	"\apayload\x18\t \x01(\fR\apayload\x12\x1c\n" +
+	"\tsignature\x18\n" +
+	" \x01(\fR\tsignature\"\x05\n" +
+	"\x03Ack2=\n" +
+	"\tTransport\x120\n" +
+	"\aDeliver\x12\x14.blockchain.Envelope\x1a\x0f.blockchain.AckB\x1cZ\x1ablockchain-lab01/src/protob\x06proto3"
 
 var (
 	file_src_proto_consensus_proto_rawDescOnce sync.Once
@@ -299,24 +209,19 @@ func file_src_proto_consensus_proto_rawDescGZIP() []byte {
 	return file_src_proto_consensus_proto_rawDescData
 }
 
-var file_src_proto_consensus_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_src_proto_consensus_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_src_proto_consensus_proto_goTypes = []any{
-	(*Transaction)(nil),         // 0: blockchain.Transaction
-	(*Block)(nil),               // 1: blockchain.Block
-	(*BroadcastResponse)(nil),   // 2: blockchain.BroadcastResponse
-	(*TransactionResponse)(nil), // 3: blockchain.TransactionResponse
+	(*Envelope)(nil), // 0: blockchain.Envelope
+	(*Ack)(nil),      // 1: blockchain.Ack
 }
 var file_src_proto_consensus_proto_depIdxs = []int32{
-	0, // 0: blockchain.Block.transactions:type_name -> blockchain.Transaction
-	1, // 1: blockchain.NodeService.BroadcastBlock:input_type -> blockchain.Block
-	0, // 2: blockchain.NodeService.SendTransaction:input_type -> blockchain.Transaction
-	2, // 3: blockchain.NodeService.BroadcastBlock:output_type -> blockchain.BroadcastResponse
-	3, // 4: blockchain.NodeService.SendTransaction:output_type -> blockchain.TransactionResponse
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	0, // 0: blockchain.Transport.Deliver:input_type -> blockchain.Envelope
+	1, // 1: blockchain.Transport.Deliver:output_type -> blockchain.Ack
+	1, // [1:2] is the sub-list for method output_type
+	0, // [0:1] is the sub-list for method input_type
+	0, // [0:0] is the sub-list for extension type_name
+	0, // [0:0] is the sub-list for extension extendee
+	0, // [0:0] is the sub-list for field type_name
 }
 
 func init() { file_src_proto_consensus_proto_init() }
@@ -330,7 +235,7 @@ func file_src_proto_consensus_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_src_proto_consensus_proto_rawDesc), len(file_src_proto_consensus_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

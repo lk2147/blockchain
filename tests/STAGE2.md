@@ -167,6 +167,6 @@ from literal encoded leaf payloads and explicit small-tree formulas.
 - Validation computes a possible next state. Consensus must select and finalize
   a block before that state is committed.
 - Stage 3 still needs rounds, voting, locks, timeouts, quorum validation and
-  finalization. Stage 4 still needs simulated communication and header/body flow.
+  finalization. Stage 4 supplies real communication, message faults and header/body flow.
 
 Stop here for student review and approval before Stage 3.

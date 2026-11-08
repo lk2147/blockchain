@@ -1,5 +1,8 @@
 # Stage 3: Lab01 voting, locking and finalization
 
+Stage 4 now uses real gRPC node processes only; see REAL_NETWORK.md. Controlled
+message harnesses below are protocol unit tests, not a virtual cluster backend.
+
 ## Scope and files
 
 This is Lab01's two-phase, round-based locking protocol. It is not labelled
@@ -165,11 +168,11 @@ this stage does not impose a separate memory quota on Byzantine message floods.
 | Equivocations | Return retained pairs of conflicting authenticated votes |
 
 Output is a queue of instructions, not delivery through shared state. Stage 4
-must transport messages through its simulated network and implement header
+must transport messages through real connections and implement header
 acceptance before body transmission; the full-block APIs here do not implement
 or claim that handshake. Events contain height/round, kind/reason, hash, step,
 validator, and vote phase where relevant. No event timestamps or log files are
-generated yet; the simulator will attach virtual timestamps and node identities.
+generated in Stage 3; the real runtime attaches actual timestamps and node identities.
 
 ReceiveFinalized reexecutes the block against the local parent state and checks
 every unique PRECOMMIT signature, scope and quorum. It does not trust a peer's
@@ -220,7 +223,7 @@ retaining the quorum and no-conflicting-finalization assertions. Later focused
 and full runs passed. No race detector was run: this stage adds no goroutines
 or concurrent engine calls.
 
-These are Stage 3 unit/component results. T1-T8 through the unreliable simulated
+These are Stage 3 unit/component results. T1-T7/adapted-T8 through the real
 network, byte-identical log checks, outbound limits and header/body handshake
 remain for Stages 4-6. Do not treat this coverage percentage as proof that every
 possible Byzantine schedule has been tested.

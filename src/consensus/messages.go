@@ -1,6 +1,6 @@
 // Package consensus implements Lab01's two-phase, round-based locking protocol.
-// It is a single-threaded state machine; a simulator supplies message delivery
-// and timeout events. It neither owns a network nor uses wall-clock time.
+// It is a single-threaded state machine; the real node runtime supplies messages
+// and timeout events. The engine itself owns no sockets or wall-clock timers.
 package consensus
 
 import (

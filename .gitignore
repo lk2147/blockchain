@@ -34,6 +34,8 @@ go.work.sum
 
 # Project file
 Lab01.pdf
-AGENTS.md
 REPORT.md
-guide.md
+
+# Generated local clusters contain private keys and runtime output.
+/local-runs/
+key-*.hex

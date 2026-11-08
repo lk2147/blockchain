@@ -11,7 +11,7 @@ import (
 )
 
 // GenerateIdentity uses operating-system cryptographic randomness, never a
-// simulator seed. Test fixtures must not be used as real identities.
+// network fault seed. Test fixtures must not be used as real identities.
 func GenerateIdentity() (types.PublicKey, ed25519.PrivateKey, error) {
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

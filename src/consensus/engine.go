@@ -306,13 +306,7 @@ func (e *Engine) checkProof(p Proposal, hash types.Hash) (uint64, error) {
 }
 
 func (e *Engine) ReceiveProposal(p Proposal) error {
-	if p.Height != e.height || p.Round != e.round || p.OriginRound > p.Round {
-		return e.reject(fmt.Errorf("unexpected proposal height/round"))
-	}
-	if p.Proposer != e.Proposer(e.height, e.round) {
-		return e.reject(fmt.Errorf("wrong round proposer"))
-	}
-	if err := VerifyProposal(e.chain, p); err != nil {
+	if err := e.ValidateProposalHeader(p); err != nil {
 		return e.reject(err)
 	}
 	hash, err := crypt.BlockHash(p.Block.Header)
@@ -326,15 +320,12 @@ func (e *Engine) ReceiveProposal(p Proposal) error {
 	if err != nil {
 		return e.reject(err)
 	}
-	proofRound, err := e.checkProof(p, hash)
-	if err != nil {
-		return e.reject(err)
+	proofRound := uint64(0)
+	if len(p.Proof) > 0 {
+		proofRound = p.Proof[0].Round
 	}
 	e.blocks[hash] = candidate{cloneBlock(p.Block), p.OriginRound, post}
 	e.proposals[e.round] = cloneProposal(p)
-	// Independently verified certificate is evidence even if a Byzantine member
-	// previously sent this receiver a conflicting vote. Do not re-count it as
-	// a fresh vote; use the authenticated quorum directly to update lock state.
 	if len(p.Proof) > 0 {
 		e.observeQuorum(hash, proofRound, p.Proof)
 	}
@@ -350,6 +341,34 @@ func (e *Engine) ReceiveProposal(p Proposal) error {
 		}
 	}
 	return e.progress()
+}
+
+// ValidateProposalHeader authenticates the envelope, header and quorum evidence
+// without reading a body or changing consensus state. Header acceptance is not
+// proposal acceptance: ReceiveProposal still validates and executes the body.
+func (e *Engine) ValidateProposalHeader(p Proposal) error {
+	if p.Height != e.height || p.Round != e.round || p.OriginRound > p.Round {
+		return fmt.Errorf("unexpected proposal height/round")
+	}
+	if p.Proposer != e.Proposer(e.height, e.round) {
+		return fmt.Errorf("wrong round proposer")
+	}
+	if err := VerifyProposal(e.chain, p); err != nil {
+		return err
+	}
+	hash, err := crypt.BlockHash(p.Block.Header)
+	if err != nil {
+		return err
+	}
+	err = block.ValidateHeader(block.Context{ChainID: e.chain, Height: e.height, ParentHash: e.parent, Proposer: e.Proposer(e.height, p.OriginRound)}, p.Block.Header)
+	if err != nil {
+		return err
+	}
+	_, err = e.checkProof(p, hash)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (e *Engine) emit(phase types.VotePhase, c choice) error {
@@ -432,7 +451,7 @@ func (e *Engine) catchUpRound() {
 }
 
 // certificate order follows the fixed validator list, avoiding map iteration
-// in outputs, proposal signatures, and eventual deterministic logs.
+// in outputs, proposal signatures and local evidence ordering.
 func (e *Engine) certificate(round uint64, phase types.VotePhase, c choice) []types.Vote {
 	var proof []types.Vote
 	for _, id := range e.validators {
@@ -526,8 +545,8 @@ func (e *Engine) finalize(c candidate, round uint64, hash types.Hash, proof []ty
 // PRECOMMIT is independently checked; a peer's finalized flag is never trusted.
 // Missing earlier heights must be delivered sequentially.
 func (e *Engine) ReceiveFinalized(f Finalized) error {
-	if f.Block.Header.Height != e.height || f.OriginRound > f.Round {
-		return e.reject(fmt.Errorf("unexpected decision height/round"))
+	if err := e.ValidateDecisionHeader(f); err != nil {
+		return e.reject(err)
 	}
 	post, err := block.Validate(block.Context{ChainID: e.chain, Height: e.height, ParentHash: e.parent, Proposer: e.Proposer(e.height, f.OriginRound)}, e.committed, f.Block)
 	if err != nil {
@@ -537,21 +556,38 @@ func (e *Engine) ReceiveFinalized(f Finalized) error {
 	if err != nil {
 		return e.reject(err)
 	}
+	return e.finalize(candidate{cloneBlock(f.Block), f.OriginRound, post}, f.Round, hash, f.Proof)
+}
+
+// ValidateDecisionHeader checks the signed header and complete finality proof
+// before a receiver requests its body. It does not finalize or change state.
+func (e *Engine) ValidateDecisionHeader(f Finalized) error {
+	if f.Block.Header.Height != e.height || f.OriginRound > f.Round {
+		return fmt.Errorf("unexpected decision height/round")
+	}
+	err := block.ValidateHeader(block.Context{ChainID: e.chain, Height: e.height, ParentHash: e.parent, Proposer: e.Proposer(e.height, f.OriginRound)}, f.Block.Header)
+	if err != nil {
+		return err
+	}
+	hash, err := crypt.BlockHash(f.Block.Header)
+	if err != nil {
+		return err
+	}
 	seen := make(map[types.ValidatorID]bool)
 	for _, v := range f.Proof {
 		if !e.members[v.Validator] || seen[v.Validator] {
-			return e.reject(fmt.Errorf("unknown or repeated decision validator"))
+			return fmt.Errorf("unknown or repeated decision validator")
 		}
 		if v.Height != e.height || v.Round != f.Round || v.Phase != types.Precommit || v.IsNil || v.BlockHash != hash {
-			return e.reject(fmt.Errorf("decision vote scope mismatch"))
+			return fmt.Errorf("decision vote scope mismatch")
 		}
 		if err = crypt.VerifyVote(e.chain, v); err != nil {
-			return e.reject(err)
+			return err
 		}
 		seen[v.Validator] = true
 	}
 	if len(seen) < e.quorum {
-		return e.reject(fmt.Errorf("insufficient decision quorum"))
+		return fmt.Errorf("insufficient decision quorum")
 	}
-	return e.finalize(candidate{cloneBlock(f.Block), f.OriginRound, post}, f.Round, hash, f.Proof)
+	return nil
 }
