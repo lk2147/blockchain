@@ -39,5 +39,6 @@ Actual checks: gofmt clean; go test ./... -count=1 passed; go test -race ./...
 -count=1 passed including real multi-process clusters; go vet ./... passed.
 The launcher itself was also executed successfully with ten node.exe processes.
 
-The complete Stage 5 T1-T7/adapted-T8 matrix and Stage 6 controlled-rerun script,
-report and submission preparation remain incomplete. Stop here for review.
+This was the Stage 4 review boundary. Stage 5 subsequently added the real T1-T8
+suite and controlled reruns; see STAGE5.md. Stage 6 report/submission preparation
+is still pending.

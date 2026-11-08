@@ -30,6 +30,7 @@ type Config struct {
 	ReceiveWindowMS, BlockMS         uint64
 	Faults                           Policy
 	Workload                         [][]types.Transaction
+	StartAtUnixMS                    int64 // Optional common real-clock start for controlled experiments.
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -51,6 +52,9 @@ func LoadConfig(path string) (Config, error) {
 	return c, c.Validate()
 }
 func (c Config) Validate() error {
+	if c.StartAtUnixMS < 0 || c.StartAtUnixMS > time.Now().Add(24*time.Hour).UnixMilli() {
+		return fmt.Errorf("invalid experiment start time")
+	}
 	if len(c.Peers) < 8 || (len(c.Peers)-1)%3 != 0 || c.F != (len(c.Peers)-1)/3 || c.NodeID < 0 || c.NodeID >= len(c.Peers) {
 		return fmt.Errorf("require n>=8, n=3f+1 and valid node ID")
 	}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	cons "blockchain-lab01/src/consensus"
@@ -85,23 +86,35 @@ type arrival struct {
 	window uint64
 	count  int
 }
+
+// localNode is the owner-loop endpoint. Production uses node.Runtime; tests can
+// run an actual faulty peer implementation without modifying honest engines.
+type localNode interface {
+	Start() error
+	Receive(network.Packet) error
+	Ledger() []cons.Finalized
+	StateRoot() (types.Hash, error)
+}
 type process struct {
 	pb.UnimplementedTransportServer
 	cfg                       Config
 	ctx                       context.Context
 	key                       ed25519.PrivateKey
 	ids                       []types.ValidatorID
-	runtime                   *node.Runtime
+	runtime                   localNode
 	log                       *logWriter
 	in                        chan received
 	jobs                      chan *pb.Envelope
 	queue                     tasks
 	seq, packet               uint64
-	pending                   int
+	queued                    atomic.Int64 // Scheduled + dispatcher + per-peer/inflight messages.
 	faults                    *faultLayer
 	seen, accepted, requested map[transfer]bool
 	blocked                   map[int]uint64
 	arrivals                  map[int]arrival
+	started                   bool
+	rateMu                    sync.Mutex
+	nextSend                  time.Time
 }
 
 func (p *process) now() uint64            { return uint64(time.Since(p.log.start) / time.Millisecond) }
@@ -128,7 +141,7 @@ func (p *process) Send(peer int, m network.Message) error {
 	if m.Kind == network.Body && !p.requested[k] {
 		return fmt.Errorf("body without acceptance request")
 	}
-	if p.pending+len(p.jobs) >= p.cfg.QueueLimit {
+	if p.queued.Load() >= int64(p.cfg.QueueLimit) {
 		p.Record(network.Event{Node: p.cfg.NodeID, Peer: peer, Event: "queue_full", Type: m.Kind, Height: m.Height, Round: m.Round})
 		return network.ErrQueueFull
 	}
@@ -139,19 +152,31 @@ func (p *process) Send(peer int, m network.Message) error {
 		return err
 	}
 	e.Signature = ed25519.Sign(p.key, b)
-	plans, dropped := p.faults.plan(p.now(), e)
+	faultNow := p.now()
+	if p.cfg.StartAtUnixMS > 0 {
+		elapsed := time.Now().UnixMilli() - p.cfg.StartAtUnixMS
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		faultNow = uint64(elapsed)
+	}
+	plans, dropped := p.faults.plan(faultNow, e)
+	if p.queued.Load()+int64(len(plans)) > int64(p.cfg.QueueLimit) {
+		p.frameEvent(e, "queue_full", "fault copies exceed remaining outbound capacity")
+		return network.ErrQueueFull
+	}
 	if dropped {
 		p.frameEvent(e, "fault_drop", "")
 	}
 	for _, d := range plans {
 		d := d
-		p.pending++
+		p.queued.Add(1)
 		p.frameEvent(d.frame, "fault_"+d.reason, fmt.Sprintf("hold %d ms", d.after))
 		if err := p.Schedule(d.after, func() error {
-			p.pending--
 			select {
 			case p.jobs <- d.frame:
 			default:
+				p.queued.Add(-1)
 				p.frameEvent(d.frame, "queue_full", "transmit queue full; peer retry required")
 			}
 			return nil
@@ -202,6 +227,9 @@ func (p *process) Deliver(ctx context.Context, e *pb.Envelope) (*pb.Ack, error) 
 	}
 }
 func (p *process) receive(e *pb.Envelope) error {
+	if !p.started {
+		return network.Reject(fmt.Errorf("node awaiting experiment start"))
+	}
 	peer := int(e.Sender)
 	now := p.now()
 	if until := p.blocked[peer]; until > now {
@@ -247,51 +275,76 @@ func (p *process) receive(e *pb.Envelope) error {
 	return p.runtime.Receive(network.Packet{Message: network.Message{Kind: kind, Ref: ref, Height: e.Height, Round: e.Round, Data: append([]byte(nil), e.Payload...)}, ID: e.Sequence, From: peer, To: p.cfg.NodeID})
 }
 
-// One IO worker enforces the outbound rate at actual RPC transmission time.
-// Node consensus stays on the owner loop while unavailable peers time out.
+// Each peer has independent IO. A shared send gate preserves the node-wide
+// rate at actual transmission time without holding the gate during an RPC.
 func (p *process) sender(wg *sync.WaitGroup) {
 	defer wg.Done()
-	clients := make(map[int]pb.TransportClient)
-	conns := make(map[int]*grpc.ClientConn)
-	defer func() {
-		for _, c := range conns {
-			if err := c.Close(); err != nil {
-				p.log.record(network.Event{Node: p.cfg.NodeID, Peer: -1, Event: "close_error", Reason: err.Error()})
-			}
+	var workers sync.WaitGroup
+	queues := make([]chan *pb.Envelope, len(p.ids))
+	for peer := range p.ids {
+		if peer == p.cfg.NodeID {
+			continue
 		}
-	}()
-	next := time.Now()
+		jobs := make(chan *pb.Envelope, p.cfg.QueueLimit)
+		queues[peer] = jobs
+		workers.Add(1)
+		go p.sendPeer(peer, jobs, &workers)
+	}
+	defer workers.Wait()
 	for {
 		select {
 		case <-p.ctx.Done():
 			return
 		case e := <-p.jobs:
-			if wait := time.Until(next); wait > 0 {
+			select {
+			case queues[int(e.Recipient)] <- e:
+			default:
+				p.queued.Add(-1)
+				p.frameEvent(e, "queue_full", "peer transmit queue full; retry required")
+			}
+		}
+	}
+}
+func (p *process) sendPeer(peer int, jobs <-chan *pb.Envelope, wg *sync.WaitGroup) {
+	defer wg.Done()
+	conn, err := grpc.NewClient(p.cfg.Peers[peer].Address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		p.Record(network.Event{Node: p.cfg.NodeID, Peer: peer, Event: "connection_error", Reason: err.Error()})
+		return
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			p.Record(network.Event{Node: p.cfg.NodeID, Peer: peer, Event: "close_error", Reason: err.Error()})
+		}
+	}()
+	client := pb.NewTransportClient(conn)
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case e := <-jobs:
+			p.rateMu.Lock()
+			if wait := time.Until(p.nextSend); wait > 0 {
 				timer := time.NewTimer(wait)
 				select {
 				case <-timer.C:
 				case <-p.ctx.Done():
 					timer.Stop()
+					p.rateMu.Unlock()
 					return
 				}
 			}
-			peer := int(e.Recipient)
-			client := clients[peer]
-			if client == nil {
-				conn, err := grpc.NewClient(p.cfg.Peers[peer].Address, grpc.WithTransportCredentials(insecure.NewCredentials()))
-				if err != nil {
-					p.frameEvent(e, "send_error", err.Error())
-					continue
-				}
-				conns[peer] = conn
-				client = pb.NewTransportClient(conn)
-				clients[peer] = client
+			if p.ctx.Err() != nil {
+				p.rateMu.Unlock()
+				return
 			}
 			p.frameEvent(e, "send", "")
-			next = time.Now().Add(time.Duration(p.cfg.SendGapMS) * time.Millisecond)
+			p.nextSend = time.Now().Add(time.Duration(p.cfg.SendGapMS) * time.Millisecond)
+			p.rateMu.Unlock()
 			ctx, cancel := context.WithTimeout(p.ctx, 250*time.Millisecond)
 			_, err := client.Deliver(ctx, e)
 			cancel()
+			p.queued.Add(-1)
 			if err != nil {
 				p.frameEvent(e, "send_error", err.Error())
 			} else {
@@ -319,6 +372,12 @@ func (p *process) save() error {
 // Run owns one node. It serves until its context/deadline so peers can fetch
 // decisions after this node finishes. Existing outputs cannot be resumed safely.
 func Run(parent context.Context, c Config) (resultErr error) {
+	return runWithNode(parent, c, func(p *process) (localNode, error) {
+		return node.New(node.Config{ID: c.NodeID, ChainID: c.ChainID, F: c.F, Validators: p.ids, PrivateKey: p.key, BaseTimeout: c.BaseTimeoutMS, RetryInterval: c.RetryMS, TargetHeights: c.TargetHeights, Workload: c.Workload}, p)
+	})
+}
+
+func runWithNode(parent context.Context, c Config, makeNode func(*process) (localNode, error)) (resultErr error) {
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -359,7 +418,7 @@ func Run(parent context.Context, c Config) (resultErr error) {
 	ctx, cancel := context.WithTimeout(parent, time.Duration(c.RunForMS)*time.Millisecond)
 	defer cancel()
 	p := &process{cfg: c, ctx: ctx, key: key, ids: ids, log: &logWriter{file: file, start: time.Now()}, in: make(chan received, c.QueueLimit), jobs: make(chan *pb.Envelope, c.QueueLimit), faults: newFaultLayer(c.Faults), seen: make(map[transfer]bool), accepted: make(map[transfer]bool), requested: make(map[transfer]bool), blocked: make(map[int]uint64), arrivals: make(map[int]arrival)}
-	p.runtime, err = node.New(node.Config{ID: c.NodeID, ChainID: c.ChainID, F: c.F, Validators: ids, PrivateKey: key, BaseTimeout: c.BaseTimeoutMS, RetryInterval: c.RetryMS, TargetHeights: c.TargetHeights, Workload: c.Workload}, p)
+	p.runtime, err = makeNode(p)
 	if err != nil {
 		return err
 	}
@@ -383,7 +442,21 @@ func Run(parent context.Context, c Config) (resultErr error) {
 		}
 	}()
 	p.Record(network.Event{Node: c.NodeID, Peer: -1, Event: "listen", Reason: fmt.Sprintf("pid=%d address=%s", os.Getpid(), listener.Addr())})
-	if err = p.runtime.Start(); err != nil {
+	start := func() error {
+		p.started = true
+		p.Record(network.Event{Node: c.NodeID, Peer: -1, Event: "experiment_start"})
+		if c.Faults.DisableAfterMS > 0 {
+			if err := p.Schedule(c.Faults.DisableAfterMS, func() error { p.Record(network.Event{Node: c.NodeID, Peer: -1, Event: "faults_disabled"}); return nil }); err != nil {
+				return err
+			}
+		}
+		return p.runtime.Start()
+	}
+	if delay := c.StartAtUnixMS - time.Now().UnixMilli(); c.StartAtUnixMS > 0 && delay > 0 {
+		if err = p.Schedule(uint64(delay), start); err != nil {
+			return err
+		}
+	} else if err = start(); err != nil {
 		return err
 	}
 	if err = os.WriteFile(filepath.Join(c.OutputDir, "ready"), []byte(listener.Addr().String()), 0600); err != nil {

@@ -18,8 +18,10 @@ This changes real communication without simulating the blockchain nodes.
 
 One owner loop handles each node's consensus state and real timer callbacks.
 Concurrent gRPC handlers authenticate messages and post them to this loop.
-An IO worker enforces outbound rate limits at actual RPC-attempt time. Logs use
-a mutex because the owner loop and IO worker both produce events. Protocol
+Independent per-peer IO workers prevent a crashed peer from holding up healthy
+connections. A shared gate enforces the node-wide rate at actual RPC-attempt
+time; a global atomic count bounds scheduled, queued and inflight messages.
+Logs use a mutex because the owner loop and IO workers produce events. Protocol
 rejection is logged; internal/scheduling/log failures propagate instead of
 being silently treated as bad peer messages.
 
@@ -84,6 +86,12 @@ Overflow is logged and ordinary cached-message retries try again. Each receiver
 counts authenticated arrivals per peer/ReceiveWindowMS and temporarily blocks
 overactive peers for BlockMS. Honest traffic must fit those limits for liveness.
 Faults stopping does not make the OS enforce a hard latency guarantee.
+
+Optional `StartAtUnixMS` coordinates a controlled experiment's real-clock start.
+Servers listen first, then start consensus at this timestamp. The fault window
+uses the same epoch when supplied. Normal generated configurations omit it and
+start immediately. This starts processes, not consensus outcomes; each node
+still validates every proposal/vote and makes its own decision.
 
 ## Header/body and signatures
 
@@ -163,8 +171,8 @@ Evidence remains in local-runs/verified-real-faults (ignored because it contains
 |---|---|---|---|
 | TestTransportAuthenticationAndDomains | Fixed test key; mutate each signed field/context; wrong chain/recipient | Reject tampering and cross-domain/scope reuse | PASS |
 | TestFaultPolicyPreservesSignedReplays | Explicit policy/input times; forced duplication/drop, reorder, old history | Exact holds; unchanged old signatures/content; fault-disable behavior | PASS |
-| TestRealProcessClusters/normal | Ten distinct child processes over real TCP, two fixed signed workloads | Independently re-execute all ledgers, verify 7-signature quorums, expected values/nonces and common history/root | PASS |
-| TestRealProcessClusters/injected-faults | Same real cluster with all five faults enabled, later disabled | Same independent checks; all fault types actually occur; old votes rejected; every transmission honors its planned hold | PASS |
+| TestStage5/T1 | Ten distinct child processes over real TCP, two fixed signed workloads | Independently re-execute all ledgers, verify 7-signature quorums, expected values/nonces and common history/root | PASS |
+| TestStage5/T2 and T8 | Dedicated duplicate/reorder case and two same-seed fault-enabled runs | Real transmissions, no duplicate signing/counting, preserved transaction order/results, observed configured holds | PASS |
 | TestRealSocketRejectsInvalidHeadersAndBodies | Actual gRPC connection with invalid proposal signature, mismatched/unsolicited body and authenticated peer flood | Reject invalid data; no vote/finalization supporting it; actual peer block/drop/unblock | PASS |
 
 The child-entry test helper is skipped in the parent and executed inside real
@@ -193,7 +201,8 @@ Tests also compare exact signed transaction order and the resulting state across
 the normal and fault-injected runs. Faulted duplicate/reorder/replay frames must
 have reached actual transmission, not just a planning log. Actual send timestamps
 must obey the configured outbound rate, in addition to each planned hold.
-Stage 5 still needs the full real T1-T7/adapted-T8 matrix, including multi-process
-equivocation/crash scenarios. Stage 6 still needs the controlled rerun script,
-report and archive. Production readiness, safe crash recovery, dynamic membership
+Stage 5 now provides named real T1-T8 cases, including multi-process equivocation,
+transaction replay and actual proposer termination; see STAGE5.md. The single
+entry is `python tests/run_tests.py`, optionally --race. Stage 6 still needs
+submission preparation, the report and archive. Production readiness, safe crash recovery, dynamic membership
 and unrestricted network/workload support are not claimed.

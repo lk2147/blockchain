@@ -150,16 +150,22 @@ use fixed identities and the same ordered inputs when comparing final states.
 ## Run the tests
 
 ```text
-go test ./... -count=1
-go vet ./...
-go test -race ./... -count=1
+python tests/run_tests.py
+python tests/run_tests.py --race
 ```
 
-Use the full Go executable path if needed. Race detection needs a supported C
-compiler. Real tests take tens of seconds and launch actual child processes on
-localhost. The child-entry helper is skipped in the parent and executed in the
-children; it is not a skipped scenario. See [test status](tests/TEST_STATUS.md)
-for the current checks and remaining T1-T8 gaps.
+Add `--go D:/tools/golang/bin/go.exe` if Go is not on PATH. This single entry
+checks formatting, runs all unit tests and named real-process T1-T8 scenarios,
+checks that no scenario is missing, and runs go vet. Evidence is saved in the
+printed fresh local-runs/suite-* directory; use --output to choose a fresh path.
+Race detection needs a supported C compiler. The suite launches ten actual node
+processes for each case and takes a few minutes, especially with --race.
+
+The child-entry helper is skipped in the parent and executed inside the children;
+it is not a skipped scenario. Direct `go test ./... -count=1` also runs the suite,
+but its scenario logs use temporary directories unless LAB01_EVIDENCE_DIR is set.
+See [test status](tests/TEST_STATUS.md) and [Stage 5](tests/STAGE5.md) for observed
+results, injection details and limitations.
 
 ## Scope and implementation notes
 
@@ -175,7 +181,8 @@ not a production or public-internet deployment. Workload transactions are preloa
 signed client inputs. Dynamic membership and safe restart/recovery are not implemented.
 
 See [real networking](tests/REAL_NETWORK.md) and [Stage 4](tests/STAGE4.md).
-The formal Stage 5 scenario matrix and Stage 6 report/archive remain incomplete.
+Stage 5's real-network T1-T8 suite has passed normal and race-enabled runs.
+Stage 6 submission preparation, report and archive remain incomplete.
 
 ## Protobuf maintenance
 

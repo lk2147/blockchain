@@ -512,11 +512,14 @@ If a requirement cannot be completed, state that clearly. Never mark an incomple
 
 # Current workflow and handoff
 
-Stages 0-3 were reviewed with the student. Stage 4 was revised to the real-only
-network goal and is ready for review. Do not restart Stage 0 solely because an
+Stages 0-4 were reviewed with the student. Stage 5's real-process T1-T8 suite has
+passed normal and race-enabled runs and is ready for student review. Stage 6
+has not started and is not automatically authorized. Do not restart Stage 0 solely because an
 earlier instruction said to begin with an audit. Inspect relevant existing code
 before the requested stage, preserve completed work, and follow the student's
-latest explicit approval. Stage 5/6 are not complete or automatically authorized.
+latest explicit approval. Use `python tests/run_tests.py` for all scenarios and
+unit/static checks; add --race for race detection. Test-only faulty peers never
+ship in the production CLI and may use only their own configured private keys.
 Update this progress record as stages are approved so future work is not based
 on stale simulator specifications. Explain each stage in student-friendly terms
 and stop for review at the agreed stage boundary.

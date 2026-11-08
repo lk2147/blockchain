@@ -6,10 +6,8 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -272,17 +270,22 @@ func TestRealSocketRejectsInvalidHeadersAndBodies(t *testing.T) {
 	}
 }
 
-// This is the child-process entry point used by TestRealProcessClusters.
+// This is the child-process entry point used by TestStage5.
 func TestProcessNodeEntry(t *testing.T) {
 	path := os.Getenv("LAB01_CHILD_CONFIG")
 	if path == "" {
-		t.Skip("child-process entry point; executed by TestRealProcessClusters")
+		t.Skip("child-process entry point; executed by TestStage5")
 	}
 	c, err := LoadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = Run(context.Background(), c); err != nil {
+	if role := os.Getenv("LAB01_FAULTY_ROLE"); role != "" {
+		err = runWithNode(context.Background(), c, func(p *process) (localNode, error) { return newFaultyPeer(p, role) })
+	} else {
+		err = Run(context.Background(), c)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -305,257 +308,4 @@ func reserveAddresses(t *testing.T, n int) []string {
 		}
 	}
 	return addrs
-}
-
-func TestRealProcessClusters(t *testing.T) {
-	var rootAcrossRuns string
-	if os.Getenv("LAB01_CHILD_CONFIG") != "" {
-		t.Fatal("cluster test must run in parent")
-	}
-	for _, faulty := range []bool{false, true} {
-		t.Run(map[bool]string{false: "normal", true: "injected-faults"}[faulty], func(t *testing.T) {
-			dir := t.TempDir()
-			addrs := reserveAddresses(t, 10)
-			var peers []Peer
-			var keys []ed25519.PrivateKey
-			var ids []types.ValidatorID
-			var workload [][]types.Transaction
-			for i := 0; i < 10; i++ {
-				key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{byte(i + 1)}, 32))
-				pub := types.PublicKey(key[32:])
-				keys = append(keys, key)
-				ids = append(ids, types.ValidatorID(pub))
-				peers = append(peers, Peer{Address: addrs[i], PublicKey: hex.EncodeToString(pub[:])})
-				if i < 2 {
-					tx, err := crypt.SignTransaction(types.Transaction{ChainID: "real-test", Sender: pub, TargetKey: hex.EncodeToString(pub[:]) + "/message", Value: []byte(fmt.Sprintf("value-%d", i)), Nonce: 1}, key)
-					if err != nil {
-						t.Fatal(err)
-					}
-					workload = append(workload, []types.Transaction{tx})
-				}
-			}
-			exe, err := os.Executable()
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-			defer cancel()
-			var commands []*exec.Cmd
-			var outputs []*bytes.Buffer
-			waited := false
-			t.Cleanup(func() {
-				if !waited {
-					cancel()
-					for _, cmd := range commands {
-						if err := cmd.Wait(); err != nil {
-							t.Logf("cleanup reaped child: %v", err)
-						}
-					}
-				}
-			})
-			for i, key := range keys {
-				keyPath := filepath.Join(dir, fmt.Sprintf("key%d", i))
-				if err = os.WriteFile(keyPath, []byte(hex.EncodeToString(key)), 0600); err != nil {
-					t.Fatal(err)
-				}
-				policy := Policy{Seed: int64(i + 1)}
-				duration := uint64(8000)
-				if faulty {
-					duration = 10000
-					policy = Policy{Seed: int64(i + 1), MinDelayMS: 2, MaxDelayMS: 25, DropBPS: 1000, DuplicateBPS: 1500, ReorderEvery: 7, ReorderHoldMS: 50, ReplayEvery: 3, ReplayAgeMS: 100, DisableAfterMS: 3000}
-				}
-				c := Config{ChainID: "real-test", NodeID: i, F: 3, Peers: peers, PrivateKeyFile: keyPath, OutputDir: filepath.Join(dir, fmt.Sprintf("node%d", i)), BaseTimeoutMS: 1000, RetryMS: 400, RunForMS: duration, TargetHeights: 2, SendGapMS: 1, QueueLimit: 2048, ReceiveLimit: 1000, ReceiveWindowMS: 1000, BlockMS: 200, Faults: policy, Workload: workload}
-				b, err := json.Marshal(c)
-				if err != nil {
-					t.Fatal(err)
-				}
-				path := filepath.Join(dir, fmt.Sprintf("node%d.json", i))
-				if err = os.WriteFile(path, b, 0600); err != nil {
-					t.Fatal(err)
-				}
-				cmd := exec.CommandContext(ctx, exe, "-test.run=^TestProcessNodeEntry$", "-test.v")
-				cmd.Env = append(os.Environ(), "LAB01_CHILD_CONFIG="+path)
-				out := &bytes.Buffer{}
-				cmd.Stdout = out
-				cmd.Stderr = out
-				if err = cmd.Start(); err != nil {
-					t.Fatal(err)
-				}
-				commands = append(commands, cmd)
-				outputs = append(outputs, out)
-			}
-			for i, cmd := range commands {
-				if err := cmd.Wait(); err != nil {
-					for j := i + 1; j < len(commands); j++ {
-						cancel()
-						_ = commands[j].Wait()
-					}
-					waited = true
-					t.Fatalf("child %d failed: %v\n%s", i, err, outputs[i].String())
-				}
-			}
-			waited = true
-			pids := map[int]bool{}
-			var expected []types.Hash
-			var expectedRoot string
-			faultCounts := map[string]int{}
-			for i := 0; i < 10; i++ {
-				b, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("node%d/result.json", i)))
-				if err != nil {
-					t.Fatal(err)
-				}
-				var result Result
-				if err = json.Unmarshal(b, &result); err != nil {
-					t.Fatal(err)
-				}
-				if result.PID == os.Getpid() || pids[result.PID] || result.NodeID != i || len(result.Ledger) != 2 {
-					t.Fatalf("invalid independent result at node %d: pid=%d blocks=%d", i, result.PID, len(result.Ledger))
-				}
-				pids[result.PID] = true
-				var s state.State
-				var parent types.Hash
-				for j, f := range result.Ledger {
-					if len(f.Block.Body.Transactions) != len(workload[j]) {
-						t.Fatal("unexpected ordered workload")
-					}
-					for k, tx := range f.Block.Body.Transactions {
-						actual, err := crypt.TransactionID(tx)
-						if err != nil {
-							t.Fatal(err)
-						}
-						want, err := crypt.TransactionID(workload[j][k])
-						if err != nil {
-							t.Fatal(err)
-						}
-						if actual != want {
-							t.Fatal("transaction order/content changed")
-						}
-					}
-					h := uint64(j + 1)
-					proposer := ids[((h-1)%10+f.OriginRound%10)%10]
-					s, err = block.Validate(block.Context{ChainID: "real-test", Height: h, ParentHash: parent, Proposer: proposer}, s, f.Block)
-					if err != nil {
-						t.Fatal("independent execution failed", err)
-					}
-					parent, err = crypt.BlockHash(f.Block.Header)
-					if err != nil {
-						t.Fatal(err)
-					}
-					seen := map[types.ValidatorID]bool{}
-					for _, v := range f.Proof {
-						known := false
-						for _, id := range ids {
-							if id == v.Validator {
-								known = true
-							}
-						}
-						if !known || seen[v.Validator] || v.Height != h || v.Round != f.Round || v.Phase != types.Precommit || v.IsNil || v.BlockHash != parent {
-							t.Fatal("bad independent quorum evidence")
-						}
-						if err = crypt.VerifyVote("real-test", v); err != nil {
-							t.Fatal(err)
-						}
-						seen[v.Validator] = true
-					}
-					if len(seen) < 7 {
-						t.Fatal("insufficient actual precommit quorum")
-					}
-					if i == 0 {
-						expected = append(expected, parent)
-					} else if expected[j] != parent {
-						t.Fatal("real processes finalized conflicting history")
-					}
-				}
-				root, err := s.Root("real-test")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if result.StateRoot != hex.EncodeToString(root[:]) {
-					t.Fatal("reported root disagrees with independent execution")
-				}
-				if i == 0 {
-					expectedRoot = result.StateRoot
-				} else if result.StateRoot != expectedRoot {
-					t.Fatal("real process roots disagree")
-				}
-				for _, batch := range workload {
-					tx := batch[0]
-					value, ok := s.Get(tx.TargetKey)
-					if !ok || !bytes.Equal(value, tx.Value) || s.LastNonce(tx.Sender) != 1 {
-						t.Fatal("workload missing or replayed")
-					}
-				}
-				logs, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("node%d/events.jsonl", i)))
-				if err != nil {
-					t.Fatal(err)
-				}
-				requests := map[transfer]bool{}
-				planned := map[uint64][]uint64{}
-				plannedReasons := map[uint64][]string{}
-				var sent int
-				var lastSend uint64
-				for _, line := range bytes.Split(bytes.TrimSpace(logs), []byte{'\n'}) {
-					var event network.Event
-					if err = json.Unmarshal(line, &event); err != nil {
-						t.Fatal(err)
-					}
-					faultCounts[event.Event]++
-					if event.Event == "fault_normal" || event.Event == "fault_reorder" || event.Event == "fault_duplicate" || event.Event == "fault_replay" {
-						var hold uint64
-						if _, err := fmt.Sscanf(event.Reason, "hold %d ms", &hold); err != nil {
-							t.Fatal(err)
-						}
-						planned[event.Packet] = append(planned[event.Packet], event.At+hold)
-						plannedReasons[event.Packet] = append(plannedReasons[event.Packet], event.Event)
-					}
-					if event.Event == "receive" && event.Type == network.Request {
-						requests[transfer{event.Peer, event.Ref}] = true
-					}
-					if event.Event == "send" {
-						if sent > 0 && event.At < lastSend+1 {
-							t.Fatal("actual outbound rate limit violated")
-						}
-						lastSend = event.At
-						due := planned[event.Packet]
-						which := -1
-						for j, at := range due {
-							if at <= event.At && (which < 0 || at < due[which]) {
-								which = j
-							}
-						}
-						if which < 0 {
-							t.Fatalf("node %d sent packet %d before its configured hold elapsed", i, event.Packet)
-						}
-						planned[event.Packet] = append(due[:which], due[which+1:]...)
-						reasons := plannedReasons[event.Packet]
-						faultCounts["sent_"+reasons[which]]++
-						plannedReasons[event.Packet] = append(reasons[:which], reasons[which+1:]...)
-						sent++
-						if event.Type == network.Body && !requests[transfer{event.Peer, event.Ref}] {
-							t.Fatal("real body sent without received acceptance")
-						}
-					}
-					if event.Event == "reject" && strings.Contains(event.Reason, "unexpected vote height") {
-						faultCounts["old_vote_rejected"]++
-					}
-				}
-				if sent == 0 {
-					t.Fatal("process did not actually transmit")
-				}
-			}
-			if faulty {
-				for _, kind := range []string{"fault_drop", "sent_fault_duplicate", "sent_fault_reorder", "sent_fault_replay", "old_vote_rejected"} {
-					if faultCounts[kind] == 0 {
-						t.Fatalf("fault not exercised: %s", kind)
-					}
-				}
-			}
-			if rootAcrossRuns == "" {
-				rootAcrossRuns = expectedRoot
-			} else if rootAcrossRuns != expectedRoot {
-				t.Fatal("same ordered workload produced a different result across real runs")
-			}
-			t.Logf("10 distinct processes; 2 independently verified blocks each; root=%s; faults=%v", expectedRoot, faultCounts)
-		})
-	}
 }

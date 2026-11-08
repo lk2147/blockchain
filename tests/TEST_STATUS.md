@@ -1,73 +1,71 @@
-# Current test status — rechecked 2026-11-09
+# Test status — Stage 5, 2026-11-09
 
-Passing the existing suite does not mean all T1-T8 scenarios have been implemented
-as separate real-network tests. Stage 5 and submission preparation are unfinished.
+The named real-process T1-T8 suite is implemented and passed both normal and
+race-enabled runs. Stage 6 submission preparation remains unfinished.
 
-## Executed Go checks
+## Actual complete-suite results
 
-| Command | Observed result |
+| Entry point | Result |
 |---|---|
-| go test ./... -count=1 -json | Exit 0; 195 passing test/subtest events |
-| go test -race ./... -count=1 -json | Exit 0; 195 passing test/subtest events; no reported data races |
-| go vet ./... | Exit 0; no diagnostics |
+| python tests/run_tests.py --go D:/tools/golang/bin/go.exe --output local-runs/stage5-normal | Exit 0; all T1-T8; 203 passing tests/subtests; formatting and vet passed |
+| python tests/run_tests.py --go D:/tools/golang/bin/go.exe --race --output local-runs/stage5-race | Exit 0; all T1-T8; 203 passing tests/subtests; no reported races; formatting and vet passed |
 
-Raw output is saved in local-runs/readme-review-tests/tests.log, race.log and
-vet.log. Counts include parent tests and subtests, not 195 end-to-end scenarios.
-Five packages have tests: crypto, state, block, consensus and realnet. Cmd/node,
-network metadata, the node adapter, generated proto and types have no direct test
-files; real integration tests exercise adapter/runtime behavior.
+Both directories contain summary.json, go-test.jsonl, go-vet.log and per-case
+configurations, logs, node results and verified.json. They are ignored by Git
+because they include explicitly test-only private-key fixtures. Counts include
+parent tests and subtests, not 203 independent end-to-end scenarios.
 
-TestProcessNodeEntry is skipped in the parent and executed inside each child
-process. It is an entry helper, not a skipped required scenario.
+TestProcessNodeEntry is skipped only in the parent process; it runs inside the
+actual child node processes. The runner refuses success if any T1-T8 case is
+missing. Five packages have direct tests: crypto, state, block, consensus and
+realnet; real integration tests exercise the production node adapter/transport.
 
-## Verified behavior
+## T1-T8 results
 
-| Area | Existing evidence | Result |
-|---|---|---|
-| Crypto/encoding | Reference vectors, canonical bytes, tampering, wrong domains/chains | Passed |
-| State/Merkle | Ownership, nonces, transaction replay rejection, atomic rollback, snapshot isolation, tree shapes/reference roots | Passed |
-| Blocks | Parent/proposer/signature/body/root checks, invalid batches, parent links | Passed |
-| Consensus | Unique votes, equivocation evidence, locks, NIL, timeouts, later certificates, old/future rounds | Passed |
-| Real transport | Routing authentication, invalid headers/bodies over sockets, peer block/unblock | Passed |
-| Real clusters | Ten distinct processes, two blocks each, independent execution/quorum verification and history/root agreement | Passed |
-| Real faults | Drop, actual duplicate/reorder/replay sends, hold deadlines, send-rate limits, old-vote rejection | Passed |
-| Ordered execution | Exact signed transaction order and state compared between normal/faulted runs | Passed |
+All cases use ten distinct Go processes communicating over real TCP/gRPC, with
+n=10, f=3, quorum=7 and fixed, explicitly test-only key fixtures. Each honest
+ledger is independently executed and every finality certificate authenticated.
 
-Controlled message harnesses are focused protocol unit tests. There is no virtual
-network execution backend; realnet supplies the actual-process evidence.
+| ID | Fault/input | Observed outcome | Invariant |
+|---|---|---|---|
+| T1 | Two ordered transactions, no injected faults | All ten nodes finalized the same two blocks/root | Normal agreement and execution |
+| T2 | 100% duplication, 2-8 ms holds and every fourth admission held 40 ms longer | Real duplicate/reordered sends, duplicate rejections, matching two-block histories | At most one honest signed vote per slot; unique authenticated quorums |
+| T3 | One faulty proposer sends an invalid proposal signature and wrongly domain-signed votes | Every honest node logged both rejection reasons; nine honest nodes progressed in a later round | Invalid signatures/domains cannot affect consensus |
+| T4 | Faulty proposer sends a body containing nonce-1 transaction twice; after each peer finalizes, replays the old candidate | All nine honest nodes rejected the duplicate nonce and old candidate; finalized transactions occur once in the exact expected order | Atomic rejection and at-most-once execution |
+| T5 | All outgoing protocol messages dropped for 1200 ms after a shared real-clock start, then injection disabled | No send/finalization before the loss window ended; all ten nodes subsequently finalized two blocks | Safety during loss, progress after stabilization |
+| T6 | Silent proposer, then a separate run terminating the actual round-0 proposer process before consensus starts | Both cases triggered timeouts and later-round decisions; nine surviving honest nodes finalized two blocks | Faulty proposer cannot permanently stall the chain |
+| T7 | Three faulty processes sign/transmit conflicting PREVOTEs/PRECOMMITs to two honest groups | All seven honest nodes finalized the same valid block; signed conflicts verified and detected | No conflicting finalization at the fault bound |
+| T8 | Same fixed keys, ordered workload, seed and fault settings in two independent real runs | Same exact signed transaction order and root; timestamps/fault counts may vary | Student-approved repeatability interpretation |
 
-## T1-T8 coverage and remaining work
+T5 deliberately tests complete pre-stable loss. Configured delays/holds are
+separately exercised by T2 and T8 and checked against actual RPC-attempt times.
+T7 targets one block; other cases target two. Faulty/crashed processes are not
+counted as honest and are never assigned successful ledger results.
 
-| ID | Existing coverage | Missing formal Stage 5 evidence |
-|---|---|---|
-| T1 | Real ten-node normal run, explicit workload results and authenticated finality | Named scenario entry/report |
-| T2 | Vote-counting unit cases and real combined-fault run with duplication/reordering | Dedicated isolated real scenario and trace assertions |
-| T3 | Unit signature/context checks; real bad transport/proposal signatures and body rejection | Dedicated real wrong-protocol-domain case and complete reason assertions |
-| T4 | State/block transaction replay/duplicate/nonce unit tests | Duplicate/replayed transaction injection across actual processes |
-| T5 | Real delay/drop run with faults later disabled and histories checked | Explicit pre/post-stabilization progress conditions; current finalization need not wait for disable time |
-| T6 | Silent-proposer/timeout unit case | Actual silent/crashed process scenario |
-| T7 | Ten-validator unit case with three equivocating validators | Real-process Byzantine equivocation at fault bound |
-| T8 (student interpretation) | Normal/faulted real runs preserve transaction order/state; holds checked | Dedicated same-config controlled-rerun script/report, ignoring timestamps as agreed |
+## Other checks retained
 
-Safe crash recovery, encrypted remote deployment and public-network timing
-guarantees have not been demonstrated.
+Crypto reference vectors/domain separation; ownership/nonces; Merkle reference
+roots/tree shapes; block validation; vote counting, locking, NIL, late/future
+rounds; real transport authentication; invalid header/body delivery; actual peer
+blocking/unblock; outbound rate and header-before-body gates remain tested.
+Recorded finalization events are inspected as well as saved results, checking
+that no honest process decided twice or that different honest decisions disagree.
 
-## Python launcher
+The final targeted replay/rerun check was also rerun with race detection after
+adding packet-ID binding for the deliberate T4 replays and requiring actual
+fault transmissions in both T8 runs; it is reported in STAGE5.md.
 
-Python uses only its standard library and starts actual Go processes. Its result
-check is a consistency check; the Go tests additionally re-execute blocks and
-verify signatures/quorums independently. README gives Python-only quick-start,
-prepare/edit, per-terminal and saved-result-check commands.
+## Regular launcher
 
-The recheck exercised ten separate `--node` Python invocations against one
-prepared cluster, then `--check-only` with an intentionally nonexistent Go path
-to confirm it does not build/start anything. All ten nodes saved matching
-two-block histories/roots. Node 0's edited 30 ms hold survived launch and all
-564 observed transmissions honored it. Reusing completed node output was
-rejected as expected. Evidence: local-runs/readme-reviewed-manual.
+The production CLI was rebuilt and run through the Python launcher after the
+peer-IO change. All ten processes produced matching two-block histories/root.
+Evidence: local-runs/stage5-cli-smoke. Observed injections were 190 drops,
+251 duplicates, 220 reorder holds and 297 replays, plus 73 retried send errors.
+These are observed counts, not fixed predictions for another real run.
 
-The all-node `--faults` quick-start also passed using a fresh cluster:
-ten nodes, two matching blocks each, 193 injected drops, 249 duplicates,
-226 reorder holds and 287 replay injections. It also logged 68 send errors
-handled by retries; all nodes still reached the expected result. These counts
-are observed values, not predictions. Evidence: local-runs/readme-reviewed-auto.
+## Still incomplete
+
+Stage 6's submission report, archive/structure verification and final evidence
+selection remain. Safe crash recovery/restart, encrypted remote deployment,
+production readiness and exhaustive exploration of all Byzantine schedules are
+not claimed. T6 tests crash tolerance of the surviving cluster, not restart safety.
