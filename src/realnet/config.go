@@ -1,4 +1,4 @@
-// Package realnet runs the shared blockchain node over real gRPC connections.
+// Package realnet runs the blockchain node over GossipSub and gRPC streams.
 package realnet
 
 import (
@@ -15,8 +15,9 @@ import (
 )
 
 type Peer struct {
-	Address   string
-	PublicKey string
+	Address       string
+	PublicKey     string
+	GossipAddress string
 }
 type Config struct {
 	ChainID                          string
@@ -69,15 +70,17 @@ func (c Config) Validate() error {
 	seenAddr := map[string]bool{}
 	seenKey := map[string]bool{}
 	for _, p := range c.Peers {
-		host, port, err := net.SplitHostPort(p.Address)
-		if err != nil || port == "" || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
-			return fmt.Errorf("local research mode requires loopback addresses")
+		for _, address := range []string{p.Address, p.GossipAddress} {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil || port == "" || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() || seenAddr[address] {
+				return fmt.Errorf("require distinct loopback gRPC and GossipAddress endpoints; regenerate old configurations")
+			}
+			seenAddr[address] = true
 		}
 		key, err := hex.DecodeString(p.PublicKey)
-		if err != nil || len(key) != 32 || seenKey[string(key)] || seenAddr[p.Address] {
+		if err != nil || len(key) != 32 || seenKey[string(key)] {
 			return fmt.Errorf("invalid/duplicate peer identity or address")
 		}
-		seenAddr[p.Address] = true
 		seenKey[string(key)] = true
 	}
 	return c.Faults.Validate()

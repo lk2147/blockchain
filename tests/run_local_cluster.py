@@ -63,10 +63,19 @@ def load_configs(directory):
     if len(paths) < 8 or (len(paths) - 1) % 3:
         raise ValueError("Configuration directory must contain a valid complete validator set.")
     configs = []
+    membership = None
     for node_id, path in enumerate(paths):
         config = json.loads(path.read_text(encoding="utf-8"))
         if config["NodeID"] != node_id:
             raise ValueError(f"Unexpected node ID in {path}")
+        if len(config["Peers"]) != len(paths) or config["F"] != (len(paths) - 1) // 3:
+            raise ValueError(f"Configuration directory does not cover the fixed validator set in {path}")
+        current = (config["ChainID"], config["F"], config["Peers"])
+        if membership is not None and current != membership:
+            raise ValueError(f"Different ordered validator configuration in {path}")
+        membership = current
+        if any(not peer.get("GossipAddress") for peer in config["Peers"]):
+            raise ValueError("Missing GossipAddress; prepare fresh configurations for the new transport.")
         output = Path(config["OutputDir"])
         if not output.is_absolute():
             output = path.parent / output

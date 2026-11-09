@@ -139,42 +139,6 @@ func (x *Envelope) GetSignature() []byte {
 	return nil
 }
 
-type Ack struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *Ack) Reset() {
-	*x = Ack{}
-	mi := &file_src_proto_consensus_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Ack) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Ack) ProtoMessage() {}
-
-func (x *Ack) ProtoReflect() protoreflect.Message {
-	mi := &file_src_proto_consensus_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Ack.ProtoReflect.Descriptor instead.
-func (*Ack) Descriptor() ([]byte, []int) {
-	return file_src_proto_consensus_proto_rawDescGZIP(), []int{1}
-}
-
 var File_src_proto_consensus_proto protoreflect.FileDescriptor
 
 const file_src_proto_consensus_proto_rawDesc = "" +
@@ -192,10 +156,9 @@ const file_src_proto_consensus_proto_rawDesc = "" +
 	"\x05round\x18\b \x01(\x04R\x05round\x12\x18\n" +
 	"\apayload\x18\t \x01(\fR\apayload\x12\x1c\n" +
 	"\tsignature\x18\n" +
-	" \x01(\fR\tsignature\"\x05\n" +
-	"\x03Ack2=\n" +
-	"\tTransport\x120\n" +
-	"\aDeliver\x12\x14.blockchain.Envelope\x1a\x0f.blockchain.AckB\x1cZ\x1ablockchain-lab01/src/protob\x06proto3"
+	" \x01(\fR\tsignature2G\n" +
+	"\tTransport\x12:\n" +
+	"\bExchange\x12\x14.blockchain.Envelope\x1a\x14.blockchain.Envelope(\x010\x01B\x1cZ\x1ablockchain-lab01/src/protob\x06proto3"
 
 var (
 	file_src_proto_consensus_proto_rawDescOnce sync.Once
@@ -209,14 +172,13 @@ func file_src_proto_consensus_proto_rawDescGZIP() []byte {
 	return file_src_proto_consensus_proto_rawDescData
 }
 
-var file_src_proto_consensus_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_src_proto_consensus_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_src_proto_consensus_proto_goTypes = []any{
 	(*Envelope)(nil), // 0: blockchain.Envelope
-	(*Ack)(nil),      // 1: blockchain.Ack
 }
 var file_src_proto_consensus_proto_depIdxs = []int32{
-	0, // 0: blockchain.Transport.Deliver:input_type -> blockchain.Envelope
-	1, // 1: blockchain.Transport.Deliver:output_type -> blockchain.Ack
+	0, // 0: blockchain.Transport.Exchange:input_type -> blockchain.Envelope
+	0, // 1: blockchain.Transport.Exchange:output_type -> blockchain.Envelope
 	1, // [1:2] is the sub-list for method output_type
 	0, // [0:1] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
@@ -235,7 +197,7 @@ func file_src_proto_consensus_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_src_proto_consensus_proto_rawDesc), len(file_src_proto_consensus_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   1,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

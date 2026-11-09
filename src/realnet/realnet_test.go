@@ -107,7 +107,7 @@ func TestFaultPolicyPreservesSignedReplays(t *testing.T) {
 
 func TestRealSocketRejectsInvalidHeadersAndBodies(t *testing.T) {
 	dir := t.TempDir()
-	addrs := reserveAddresses(t, 10)
+	addrs := reserveAddresses(t, 20)
 	var peers []Peer
 	var keys []ed25519.PrivateKey
 	var ids []types.ValidatorID
@@ -115,7 +115,7 @@ func TestRealSocketRejectsInvalidHeadersAndBodies(t *testing.T) {
 		key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{byte(i + 1)}, 32))
 		keys = append(keys, key)
 		ids = append(ids, types.ValidatorID(key[32:]))
-		peers = append(peers, Peer{Address: addrs[i], PublicKey: hex.EncodeToString(key[32:])})
+		peers = append(peers, Peer{Address: addrs[i], PublicKey: hex.EncodeToString(key[32:]), GossipAddress: addrs[10+i]})
 	}
 	keyPath := filepath.Join(dir, "key")
 	if err := os.WriteFile(keyPath, []byte(hex.EncodeToString(keys[0])), 0600); err != nil {
@@ -151,6 +151,40 @@ func TestRealSocketRejectsInvalidHeadersAndBodies(t *testing.T) {
 	}
 	defer conn.Close()
 	client := pb.NewTransportClient(conn)
+	streamCtx, stopStream := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stopStream()
+	stream, err := client.Exchange(streamCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initiator := &process{cfg: cfg, key: keys[1]}
+	initiator.cfg.NodeID = 1
+	hello, err := initiator.hello(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = stream.Send(hello); err != nil {
+		t.Fatal(err)
+	}
+	response, err := stream.Recv()
+	if err != nil || response.Kind != "hello" {
+		t.Fatalf("stream handshake: %v", err)
+	}
+	responses := make(chan *pb.Envelope, 32)
+	go func() {
+		defer close(responses)
+		for {
+			e, err := stream.Recv()
+			if err != nil {
+				return
+			}
+			select {
+			case responses <- e:
+			case <-streamCtx.Done():
+				return
+			}
+		}
+	}()
 	sequence := uint64(0)
 	deliver := func(kind network.Kind, ref types.Hash, data []byte) {
 		t.Helper()
@@ -161,9 +195,7 @@ func TestRealSocketRejectsInvalidHeadersAndBodies(t *testing.T) {
 			t.Fatal(err)
 		}
 		e.Signature = ed25519.Sign(keys[1], b)
-		rpcCtx, stop := context.WithTimeout(context.Background(), time.Second)
-		defer stop()
-		if _, err = client.Deliver(rpcCtx, e); err != nil {
+		if err = stream.Send(e); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -216,6 +248,16 @@ func TestRealSocketRejectsInvalidHeadersAndBodies(t *testing.T) {
 	}
 	if !unblocked {
 		t.Fatal("real peer block did not expire")
+	}
+	// The response travels back on the very same bidirectional RPC, not a
+	// reverse unary call or a second client connection.
+	select {
+	case e := <-responses:
+		if e == nil || e.Kind != "body_request" || !bytes.Equal(e.Reference, goodRef[:]) || VerifyEnvelope(cfg.ChainID, 1, ids, e) != nil {
+			t.Fatal("matching accepted-header body request did not return over the stream")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no reverse protocol traffic on bidirectional stream")
 	}
 	cancel()
 	if err := <-done; err != nil {

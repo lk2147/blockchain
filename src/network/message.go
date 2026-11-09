@@ -9,6 +9,9 @@ import (
 
 type Kind string
 
+// Broadcast addresses all configured validators through GossipSub.
+const Broadcast = -1
+
 const (
 	Header  Kind = "header"
 	Request Kind = "body_request"

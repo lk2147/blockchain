@@ -47,9 +47,15 @@ type remoteKey struct {
 	ref  types.Hash
 }
 type slot struct{ height, round uint64 }
+
+// Finality certificates are much larger than current votes. Re-advertise old
+// decisions less often so all-to-all catch-up advertisements do not starve the
+// next height under gossip replication/duplication. Initial advertisements and
+// requested bodies are still sent immediately; old decisions remain available.
+const decisionRetryEvery = 4
+
 type Runtime struct {
 	port          Port
-	peers         int
 	id            int
 	identity      types.ValidatorID
 	engine        *cons.Engine
@@ -61,6 +67,7 @@ type Runtime struct {
 	ads           []advertised
 	votes         []types.Vote
 	remote        map[remoteKey]wireHeader
+	decisionRetry uint8
 }
 
 func New(c Config, port Port) (*Runtime, error) {
@@ -74,7 +81,7 @@ func New(c Config, port Port) (*Runtime, error) {
 	if types.ValidatorID(c.PrivateKey[32:]) != c.Validators[c.ID] {
 		return nil, fmt.Errorf("node ID does not match private key")
 	}
-	n := &Runtime{port: port, peers: len(c.Validators), id: c.ID, identity: c.Validators[c.ID], engine: e, chain: c.ChainID, target: c.TargetHeights, retry: c.RetryInterval, silent: c.Silent, attempted: make(map[slot]bool), remote: make(map[remoteKey]wireHeader)}
+	n := &Runtime{port: port, id: c.ID, identity: c.Validators[c.ID], engine: e, chain: c.ChainID, target: c.TargetHeights, retry: c.RetryInterval, silent: c.Silent, attempted: make(map[slot]bool), remote: make(map[remoteKey]wireHeader)}
 	for _, txs := range c.Workload {
 		copyTX := make([]types.Transaction, len(txs))
 		for i, tx := range txs {
@@ -105,14 +112,7 @@ func (n *Runtime) send(peer int, m network.Message) error {
 	return err
 }
 func (n *Runtime) broadcast(m network.Message) error {
-	for peer := 0; peer < n.peers; peer++ {
-		if peer != n.id {
-			if err := n.send(peer, m); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return n.send(network.Broadcast, m)
 }
 func (n *Runtime) announce(a advertised) error {
 	return n.broadcast(network.Message{Kind: network.Header, Ref: a.ref, Height: a.height, Round: a.round, Data: a.header})
@@ -198,7 +198,11 @@ func (n *Runtime) scheduleRetry() error {
 	return n.port.Schedule(n.retry, func() error {
 		if !n.silent {
 			s := n.engine.Status()
+			n.decisionRetry = (n.decisionRetry + 1) % decisionRetryEvery
 			for _, a := range n.ads {
+				if a.decision && n.decisionRetry != 0 {
+					continue
+				}
 				if a.decision || (a.height == s.Height && a.round == s.Round) {
 					if err := n.announce(a); err != nil {
 						return err

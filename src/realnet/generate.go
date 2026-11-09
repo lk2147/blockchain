@@ -14,7 +14,7 @@ import (
 // Generate creates a fresh local development cluster. Key randomness is always
 // crypto/rand through GenerateIdentity, independently of Faults.Seed.
 func Generate(dir string, count, basePort int, runMS uint64, faults Policy) error {
-	if count < 8 || (count-1)%3 != 0 || basePort < 1024 || basePort+count > 65535 {
+	if count < 8 || (count-1)%3 != 0 || basePort < 1024 || basePort+2*count-1 > 65535 {
 		return fmt.Errorf("invalid cluster size or ports")
 	}
 	if err := faults.Validate(); err != nil {
@@ -36,7 +36,7 @@ func Generate(dir string, count, basePort int, runMS uint64, faults Policy) erro
 			return err
 		}
 		privatePaths = append(privatePaths, name)
-		peers = append(peers, Peer{Address: fmt.Sprintf("127.0.0.1:%d", basePort+i), PublicKey: hex.EncodeToString(pub[:])})
+		peers = append(peers, Peer{Address: fmt.Sprintf("127.0.0.1:%d", basePort+i), PublicKey: hex.EncodeToString(pub[:]), GossipAddress: fmt.Sprintf("127.0.0.1:%d", basePort+count+i)})
 		if i < 2 {
 			tx, err := crypt.SignTransaction(types.Transaction{ChainID: "lab01-local", Sender: pub, TargetKey: hex.EncodeToString(pub[:]) + "/message", Value: []byte(fmt.Sprintf("hello from participant %d", i)), Nonce: 1}, key)
 			if err != nil {

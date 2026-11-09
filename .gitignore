@@ -36,6 +36,7 @@ go.work.sum
 Lab01.pdf
 REPORT.md
 !/report/REPORT.md
+INSIGHT.md
 
 # Generated local clusters contain private keys and runtime output.
 /local-runs/

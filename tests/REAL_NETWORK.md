@@ -1,208 +1,192 @@
-# Real networking: design, configuration and evidence
+# Real networking: GossipSub and bidirectional gRPC
 
-## Execution and ownership
+Each validator is a separate Go process with its own key, consensus engine,
+ledger and application state. There is no virtual execution backend or central
+finalization authority. Protocol validation and the Merkle commitment remain
+unchanged by this transport revision.
 
-Each validator is a separate Go process with its own private key, consensus
-engine, ledger, state and Merkle root. The only cluster transport is actual
-localhost TCP/gRPC. There is no shared ledger or central finalization authority.
+## Message paths
 
-```text
-node's signed message -> configurable fault layer -> actual gRPC/TCP
-                     -> receiver's validation and consensus engine
-```
-
-The fault layer acts on application messages before their RPC is sent. A drop
-deliberately omits that RPC; it does not drop kernel TCP packets, which TCP would
-normally retransmit. A delay holds a message for real elapsed milliseconds.
-This changes real communication without simulating the blockchain nodes.
-
-One owner loop handles each node's consensus state and real timer callbacks.
-Concurrent gRPC handlers authenticate messages and post them to this loop.
-Independent per-peer IO workers prevent a crashed peer from holding up healthy
-connections. A shared gate enforces the node-wide rate at actual RPC-attempt
-time; a global atomic count bounds scheduled, queued and inflight messages.
-Logs use a mutex because the owner loop and IO workers produce events. Protocol
-rejection is logged; internal/scheduling/log failures propagate instead of
-being silently treated as bad peer messages.
-
-## Running
-
-From the repository root:
-
-```powershell
-python tests/run_local_cluster.py --faults
-# If Go is not on PATH:
-python tests/run_local_cluster.py --go D:\tools\golang\bin\go.exe --faults
-```
-
-The script builds node.exe, generates fresh cryptographic keys/configurations,
-starts ten distinct node processes, waits for their run duration and compares
-their saved two-block headers and state roots. Use `--base-port` if 29000..29009
-are occupied, and a fresh `--run-dir` to name an experiment. Keys/logs are in Git-ignored
-local-runs directories. Keys come from crypto/rand, never the fault seed.
-
-To customize a node, prepare with Python --prepare-only, edit its JSON, then use
---config-dir and --node 0 through --node 9 in separate terminals as in README.
-The launcher initializes a fresh cluster, so it does not reuse edited configs.
-Each JSON independently specifies NodeID, peer addresses/public keys, own key
-file, output directory, timeouts, retries, duration, workload and fault policy.
-
-For example, edit only node-00.json to deliberately delay node 0:
-
-```json
-"Faults": {
-  "Seed": 1,
-  "MinDelayMS": 500,
-  "MaxDelayMS": 500,
-  "DropBPS": 0,
-  "DuplicateBPS": 0,
-  "ReorderEvery": 0,
-  "ReorderHoldMS": 0,
-  "ReplayEvery": 0,
-  "ReplayAgeMS": 0,
-  "DisableAfterMS": 0
-}
-```
-
-Its outgoing messages are held for at least 500 ms. Queueing/OS delays may make
-them later; they cannot be sent earlier. Other node configs can remain fault-free.
-
-| Control | Action |
+| Traffic | Path |
 |---|---|
-| MinDelayMS / MaxDelayMS | Choose an elapsed-time hold in this range |
-| DropBPS | Discard transmissions with this probability; 10000 = 100% |
-| DuplicateBPS | Schedule an additional original signed frame |
-| ReorderEvery / ReorderHoldMS | Hold every Nth admitted message longer, allowing later messages to pass |
-| ReplayEvery / ReplayAgeMS | On every Nth admission, resend an eligible old vote to that destination, preserving its original content, sequence and signatures |
-| DisableAfterMS | Disable injections after this node's elapsed run time; zero keeps them enabled |
+| Normal proposal/finalized headers and votes | One signed broadcast publication through libp2p GossipSub |
+| Accepted-header requests and transaction bodies | Persistent gRPC Exchange stream |
+| Directed protocol messages, including test-only equivocation | Same authenticated gRPC stream |
 
-Replay history is bounded to 256 frames; an opportunity with no eligible old
-vote produces no replay. Tests require actual replay events and rejection of
-old-height votes. The generated -faults policy has a three-second fault window.
-Real input arrival/OS scheduling can vary despite fixed fault seeds.
+GossipSub selects and repairs a forwarding mesh. A publication can reach a
+validator through another peer; the application no longer expands every normal
+broadcast into nine unary RPC calls. PubSub authenticates its publisher, and
+the application checks the original validator identity and canonical transport
+signature. Relays do not become the signers of forwarded votes.
 
-SendGapMS limits actual RPC-attempt rate; QueueLimit bounds pending traffic.
-Overflow is logged and ordinary cached-message retries try again. Each receiver
-counts authenticated arrivals per peer/ReceiveWindowMS and temporarily blocks
-overactive peers for BlockMS. Honest traffic must fit those limits for liveness.
-Faults stopping does not make the OS enforce a hard latency guarantee.
+The gRPC schema is now:
 
-Optional `StartAtUnixMS` coordinates a controlled experiment's real-clock start.
-Servers listen first, then start consensus at this timestamp. The fault window
-uses the same epoch when supplied. Normal generated configurations omit it and
-start immediately. This starts processes, not consensus outcomes; each node
-still validates every proposal/vote and makes its own decision.
-
-## Header/body and signatures
-
-Only a proposal/decision header and evidence are advertised initially; no body
-is embedded. The receiver checks its own expected chain/height/proposer/parent,
-signatures and quorum evidence, then sends a signed matching body_request.
-Normal sender code refuses a body without that request. Receiver code also
-requires its own accepted-header record and verifies BodyHash before execution.
-A signed request acknowledges acceptance; a sender cannot inspect a Byzantine
-receiver's private internal state. Invalid bodies never become valid by reception.
-
-The transfer reference is SHA-256 of the exact advertised JSON envelope, keeping
-different round envelopes separate even when they wrap the same immutable block.
-Protocol signatures/hashes still use Stage 1 canonical encoding, not arbitrary
-Protobuf/JSON bytes. TX/HEADER/VOTE/PROPOSAL formats and Merkle semantics are unchanged.
-
-All gRPC envelopes, including requests, authenticate source and recipient with
-Ed25519 under TRANSPORT:<chain>. Canonical version-1 fields, in order:
-
-```text
-version byte 1
-uint32 length + UTF-8 "TRANSPORT:<chain_id>"
-uint32 sender, uint32 recipient, uint64 sequence
-uint32 kind length + kind
-fixed 32-byte reference
-uint64 height, uint64 round
-uint32 payload length + payload
+```protobuf
+rpc Exchange(stream Envelope) returns (stream Envelope);
 ```
 
-Integers are unsigned big-endian; own signature is excluded. Expected chain and
-recipient are checked. Sequence numbers identify signed frames, not an early
-duplicate filter: injected replays must reach the application's nonce/vote/height
-guards. The old tooling-only amount/recipient schema was replaced by Envelope,
-Ack and Transport.Deliver and regenerated with installed tools. Its Go package
-path now matches the module. Dependency versions were not changed.
+The lower node ID normally initiates one session for each pair. Both ends can
+write protocol frames on that same RPC. A receive loop and a single send worker
+per peer run independently. A broken session is removed and re-established;
+cached protocol retries recover messages rather than assuming a stream write
+proves receipt. One unavailable peer does not block every other peer's IO.
 
-## Files and outputs
+Initial decisions are announced immediately. Cached finalized headers are
+re-advertised every fourth RetryMS tick, while current proposals/votes retain
+their normal retry cadence. This prevents large old certificates from crowding
+out the next height under gossip replication and injected duplication. Matching
+body requests are answered immediately; the slower advertisement does not remove
+catch-up data or relax validation.
 
-- src/node/runtime.go: node-local blockchain messages, retries and consensus.
-- src/realnet/config.go: configuration/key loading.
-- src/realnet/auth.go: canonical transport authentication.
-- src/realnet/faults.go: configured message fault planning.
-- src/realnet/run.go: gRPC sockets, owner loop, real IO/timers, logs/results.
-- src/realnet/generate.go: fresh local development cluster generation.
-- src/cmd/node/main.go: runnable node/initializer.
-- src/network/message.go: wire/event/error types, no simulator implementation.
-- tests/run_local_cluster.py: launcher and result comparison.
+Each consensus engine remains on one owner loop. Network readers submit frames
+to that loop; they do not mutate votes, locks or application state themselves.
+Shutdown cancels readers, stops servers and joins workers before closing logs.
 
-Per-node events.jsonl records UTC wall time, elapsed milliseconds, local sequence,
-peer, kind, height/round, packet/reference and reasons. Fault records include
-planned holds; send records mark actual transmission attempts. result.json contains
-the process PID, independently finalized blocks/certificates and state root.
-Nodes keep serving decisions until RunForMS expires so lagging peers can catch up.
+## Configuration and identities
 
-Results are saved at orderly shutdown, not persisted as safe crash-recovery
-state. Existing output is refused and a lock prevents concurrent use of one
-output directory. Restarting a validator into an ongoing run is unsupported.
-Connections are currently loopback-only and unencrypted gRPC, with signed messages;
-encrypted remote/public deployment is not claimed. gRPC incoming size is 4 MiB.
-
-## Actual results
-
-The documented launcher was executed with ten node.exe processes, faults enabled,
-ports 29200..29209 and a ten-second configured run. Every process saved two
-matching blocks and this final state root:
+Generate fresh configurations from the repository root:
 
 ```text
-1833b74a2ded7ac3c0b1f6e4c5b95959ad5654f50f061c781cedde3596d36acf
+python tests/run_local_cluster.py --run-dir local-runs/hybrid --prepare-only
+python tests/run_local_cluster.py --config-dir local-runs/hybrid
 ```
 
-Observed injections: 189 drops, 254 duplicates, 223 reorder holds and 285 replays.
-There were 69 send_error events; startup/unavailable-peer RPC attempts can fail
-and are retried. These are measured counts, not predictions for future runs.
-Evidence remains in local-runs/verified-real-faults (ignored because it contains keys).
+Add --go D:/tools/golang/bin/go.exe when needed. Use --faults during preparation
+for the example fault policy. README explains separate terminals with --node
+and read-only inspection with --check-only.
 
-| Test | Initial conditions / injected input | Expected invariant | Observed |
-|---|---|---|---|
-| TestTransportAuthenticationAndDomains | Fixed test key; mutate each signed field/context; wrong chain/recipient | Reject tampering and cross-domain/scope reuse | PASS |
-| TestFaultPolicyPreservesSignedReplays | Explicit policy/input times; forced duplication/drop, reorder, old history | Exact holds; unchanged old signatures/content; fault-disable behavior | PASS |
-| TestStage5/T1 | Ten distinct child processes over real TCP, two fixed signed workloads | Independently re-execute all ledgers, verify 7-signature quorums, expected values/nonces and common history/root | PASS |
-| TestStage5/T2 and T8 | Dedicated duplicate/reorder case and two same-seed fault-enabled runs | Real transmissions, no duplicate signing/counting, preserved transaction order/results, observed configured holds | PASS |
-| TestRealSocketRejectsInvalidHeadersAndBodies | Actual gRPC connection with invalid proposal signature, mismatched/unsolicited body and authenticated peer flood | Reject invalid data; no vote/finalization supporting it; actual peer block/drop/unblock | PASS |
+Every Peers entry has Address (gRPC host:port), GossipAddress (libp2p host:port)
+and PublicKey (validator Ed25519 key). For ten nodes, the default initializer
+allocates gRPC ports 29000-29009 and gossip ports 29010-29019. All endpoints must
+be distinct loopback addresses. Old configurations lacking GossipAddress fail
+with an explicit instruction to regenerate. Existing experiment output cannot
+be resumed safely; use a fresh directory.
 
-The child-entry test helper is skipped in the parent and executed inside real
-child processes; it is not a skipped scenario. The parent verifies 10 distinct
-PIDs, complete signed quorum evidence and block execution rather than trusting
-reported success flags. Fault planning is unit-tested directly, not by adding
-another virtual network.
+The ordered validator list is fixed during a run. Libp2p peer IDs are derived
+from those same validator public keys; its connection gate rejects identities
+outside the configured set. TCP, Noise and Yamux are explicitly selected for
+libp2p. Its bootstrap addresses come from configuration, not open membership
+discovery. The Python launcher compares shared ChainID, F and ordered Peers
+before launch. Real runs require n>=8 and n=3f+1; ten gives f=3 and quorum seven.
 
-Actual checks: gofmt clean; go test ./... -count=1 passed; final go test -race ./...
--count=1 passed including sockets/child processes; go vet ./... passed with no
-diagnostics. One intermediate extraction build failed due to a duplicated type
-suffix; it was corrected before the successful regressions. No protocol assertion
-was weakened. Existing crypto/state/block/consensus tests remain.
+The membership fingerprint is SHA-256 of JSON encoding this fixed Go struct,
+in its declared field order: Version="LAB01-NET-2", Chain, F, Peers. Peers retain
+their configured order and fields Address, PublicKey, GossipAddress. Node ID,
+private key, output directory and node-specific fault controls are excluded.
+Every node logs its fingerprint and libp2p peer ID. The gossip topic is
+/lab01/2/<fingerprint hex>. Streams begin with mutually signed hello envelopes
+whose payload is the fingerprint; mismatches are refused. Chain ID and every
+later frame's sender/recipient/signature are also checked.
 
-## Interpretation and pending work
+gRPC remains unencrypted loopback transport with signed messages. Noise protects
+libp2p connections. This implementation does not claim public-internet deployment
+or safe validator crash recovery. Stream reconnection preserves the live engine;
+restarting a process with forgotten signing history remains unsupported.
 
-Repeatability means expected results and ordered transaction effects, with
-configured faults demonstrably applied. Block transaction execution order is
-deterministic; incidental socket arrivals and correct proposer/round choices can
-vary. Honest nodes must agree within each run; fixed ordered workloads must yield
-the expected state. Do not assert identical timestamps or all real arrival orders.
+## Header acceptance and bodies
 
-The virtual backend was removed. AGENTS.md records the student's approved
-interpretation/overrides of the PDF simulated-network/strict log-byte conditions.
-Tests also compare exact signed transaction order and the resulting state across
-the normal and fault-injected runs. Faulted duplicate/reorder/replay frames must
-have reached actual transmission, not just a planning log. Actual send timestamps
-must obey the configured outbound rate, in addition to each planned hold.
-Stage 5 now provides named real T1-T8 cases, including multi-process equivocation,
-transaction replay and actual proposer termination; see STAGE5.md. The single
-entry is `python tests/run_tests.py`, optionally --race. Stage 6 still needs
-submission preparation, the report and archive. Production readiness, safe crash recovery, dynamic membership
-and unrestricted network/workload support are not claimed.
+A header advertisement excludes its transaction body. The receiver verifies its
+own expected chain, height, proposer, parent, signatures and certificate before
+sending a signed body_request for the exact advertisement reference. A normal
+sender refuses a body without that request. The receiver requires its own
+accepted-header record, matches the body hash, executes transactions and checks
+the state root. Only consensus finalization adopts the candidate state.
+
+The advertisement reference is SHA-256 of the exact advertised JSON envelope.
+Protocol signatures/hashes still use canonical TX/HEADER/VOTE/PROPOSAL encodings.
+Protobuf transports bytes; arbitrary protobuf wire encodings are never signed.
+
+Canonical TRANSPORT version 1 retains these big-endian fields:
+
+```text
+version byte; uint32 length + TRANSPORT:<chain>
+uint32 sender; uint32 recipient; uint64 sequence
+uint32 kind length + kind; fixed 32-byte reference
+uint64 height; uint64 round; uint32 payload length + payload
+```
+
+The signature is excluded from its own signing input. Recipient 0xffffffff is
+the broadcast marker and is allowed only for headers/votes. Body requests,
+bodies and hello handshakes are directed. Hello has sequence/height/round zero,
+a zero reference and the membership fingerprint payload. Application frames
+cannot change the authenticated stream sender or substitute another recipient.
+
+## Fault controls and their scope
+
+| Setting | Action on authored protocol traffic |
+|---|---|
+| MinDelayMS / MaxDelayMS | Hold before local publication or stream write |
+| DropBPS | Omit that publication/write; 10000 means 100% |
+| DuplicateBPS | Schedule an additional unchanged signed frame |
+| ReorderEvery / ReorderHoldMS | Add a hold periodically so later frames can pass |
+| ReplayEvery / ReplayAgeMS | Republish/resend an eligible original signed vote |
+| DisableAfterMS | End artificial injections after elapsed time; zero keeps them enabled |
+
+For node 0's outgoing 500ms delay, edit only its Faults.MinDelayMS and MaxDelayMS
+to 500, with DisableAfterMS=0, before launching. Its protocol behavior stays
+honest. Incoming traffic and other nodes' authored traffic are not thereby held.
+
+The layer runs before local GossipSub publication and directed gRPC writes.
+It does not impair kernel TCP packets, connection handshakes, libp2p heartbeats
+or automatic relay forwarding. SendGapMS limits authored protocol publications
+and directed writes, not every packet emitted by libp2p. QueueLimit bounds the
+application's scheduled/queued/in-flight frames; library queues have their own
+bounds. This scope is deliberate and must not be described as full link-level
+impairment or a bandwidth bound on GossipSub replication.
+
+GossipSub suppresses relay loops using its own publication IDs. An explicit
+duplicate injection is a fresh publication of the original signed envelope,
+so the application can still see and reject the repeated vote. Sequence numbers
+identify authenticated frames, not an early application duplicate filter.
+Replay history is bounded to 256 frames. Eligible replay opportunities must
+actually result in transmissions before a test claims to have exercised replay.
+
+The receiver counts authenticated original senders per ReceiveWindowMS and
+temporarily blocks an overactive sender for BlockMS at the protocol boundary.
+This does not ban its libp2p forwarding connection or change validator membership.
+
+Optional StartAtUnixMS coordinates a real-clock experiment start. It does not
+choose a consensus outcome. The controlled suite allows four seconds to start
+secure hosts/subscriptions and eight seconds for protocol execution. Configured
+holds are minimum delays; OS scheduling can add latency. No hard delivery bound
+or identical real log order is promised.
+
+## Checks and evidence
+
+Run the single entry point from the repository root:
+
+```text
+python tests/run_tests.py
+python tests/run_tests.py --race
+```
+
+The suite preserves full T1-T8 checks: independent honest histories, execution,
+state roots, distinct authenticated quorum members, vote signing slots, hold
+deadlines, send gaps and accepted-header-before-body gates. T1/T2/T8 additionally
+require every node to show real gossip and streaming send/receive events.
+
+Focused tests in hybrid_test.go verify a real 0--1--2 gossip relay without a
+0--2 connection, actual bidirectional stream traffic, reconnect and membership
+handshake checks. The socket rejection test obtains its body_request over the
+same RPC used to advertise the header. Test fixtures are explicitly test-only
+keys. Fixed fault seeds never generate real identities.
+
+New evidence directories are local-runs/transport-normal and transport-race.
+Earlier logs/evidence and stage reports refer to the unary-gRPC snapshot, and
+must not be cited as execution evidence for this implementation. TEST_STATUS.md
+records actual final outcomes. Final report/ZIP work is deferred by the student.
+
+## Code map and protocol references
+
+- src/realnet/gossip.go: identity gate, topic validation, mesh bootstrap and relay.
+- src/realnet/stream.go: signed handshakes, duplex sessions and reconnects.
+- src/realnet/run.go: owner loop, fault scheduling, shared application send gate.
+- src/realnet/auth.go: canonical envelope authentication and broadcast scope.
+- src/node/runtime.go: protocol messages, accepted-header/body flow and retries.
+- src/proto/consensus.proto: Exchange streaming service and regenerated bindings.
+- tests/run_local_cluster.py: Python-only preparation, launch and inspection.
+
+Library references: [official GossipSub implementation](https://github.com/libp2p/go-libp2p-pubsub/tree/v0.18.0)
+and [official gRPC Go streaming tutorial](https://grpc.io/docs/languages/go/basics/).
+Pinned versions are recorded in go.mod/go.sum. These references describe the
+libraries; successful application behavior is established by executed tests.

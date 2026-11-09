@@ -19,7 +19,7 @@ func TransportBytes(e *pb.Envelope) ([]byte, error) {
 		return nil, fmt.Errorf("invalid transport envelope")
 	}
 	switch e.Kind {
-	case "header", "body_request", "body", "vote":
+	case "header", "body_request", "body", "vote", "hello":
 	default:
 		return nil, fmt.Errorf("invalid transport kind")
 	}
@@ -50,8 +50,15 @@ func TransportBytes(e *pb.Envelope) ([]byte, error) {
 	return b, nil
 }
 func VerifyEnvelope(chain string, recipient int, ids []types.ValidatorID, e *pb.Envelope) error {
-	if e == nil || e.ChainId != chain || e.Recipient != uint32(recipient) || int(e.Sender) >= len(ids) {
+	if e == nil || e.ChainId != chain || int(e.Sender) >= len(ids) {
 		return fmt.Errorf("unexpected transport chain/identity")
+	}
+	if e.Recipient == ^uint32(0) {
+		if e.Kind != "header" && e.Kind != "vote" {
+			return fmt.Errorf("only headers/votes may be broadcast")
+		}
+	} else if e.Recipient != uint32(recipient) {
+		return fmt.Errorf("unexpected transport recipient")
 	}
 	b, err := TransportBytes(e)
 	if err != nil {

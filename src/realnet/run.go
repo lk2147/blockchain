@@ -22,9 +22,6 @@ import (
 	pb "blockchain-lab01/src/proto"
 	"blockchain-lab01/src/types"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
 )
 
 type Result struct {
@@ -115,6 +112,10 @@ type process struct {
 	started                   bool
 	rateMu                    sync.Mutex
 	nextSend                  time.Time
+	gossip                    *gossipNetwork
+	sessionMu                 sync.Mutex
+	sessions                  map[int]*peerSession
+	streamWG                  sync.WaitGroup
 }
 
 func (p *process) now() uint64            { return uint64(time.Since(p.log.start) / time.Millisecond) }
@@ -128,8 +129,11 @@ func (p *process) Schedule(delay uint64, f func() error) error {
 	return nil
 }
 func (p *process) Send(peer int, m network.Message) error {
-	if peer < 0 || peer >= len(p.ids) || peer == p.cfg.NodeID {
+	if peer < network.Broadcast || peer >= len(p.ids) || peer == p.cfg.NodeID {
 		return fmt.Errorf("invalid real peer")
+	}
+	if peer == network.Broadcast && m.Kind != network.Header && m.Kind != network.Vote {
+		return fmt.Errorf("only headers and votes use GossipSub broadcast")
 	}
 	k := transfer{peer, m.Ref}
 	if m.Kind == network.Header && crypt.HashBytes(m.Data) != m.Ref {
@@ -189,7 +193,11 @@ func (p *process) Send(peer int, m network.Message) error {
 func (p *process) frameEvent(e *pb.Envelope, kind, reason string) {
 	var ref types.Hash
 	copy(ref[:], e.Reference)
-	p.Record(network.Event{Node: int(e.Sender), Peer: int(e.Recipient), Event: kind, Type: network.Kind(e.Kind), Height: e.Height, Round: e.Round, Ref: ref, Packet: e.Sequence, Reason: reason})
+	peer := int(e.Recipient)
+	if e.Recipient == ^uint32(0) {
+		peer = network.Broadcast
+	}
+	p.Record(network.Event{Node: int(e.Sender), Peer: peer, Event: kind, Type: network.Kind(e.Kind), Height: e.Height, Round: e.Round, Ref: ref, Packet: e.Sequence, Reason: reason})
 }
 func (p *process) AcceptHeader(peer int, ref types.Hash, h, r uint64) error {
 	k := transfer{peer, ref}
@@ -201,29 +209,29 @@ func (p *process) AcceptHeader(peer int, ref types.Hash, h, r uint64) error {
 	return p.Send(peer, network.Message{Kind: network.Request, Ref: ref, Height: h, Round: r})
 }
 
-func (p *process) Deliver(ctx context.Context, e *pb.Envelope) (*pb.Ack, error) {
+func (p *process) acceptFrame(ctx context.Context, e *pb.Envelope) error {
 	if err := VerifyEnvelope(p.cfg.ChainID, p.cfg.NodeID, p.ids, e); err != nil {
 		p.log.record(network.Event{Node: p.cfg.NodeID, Peer: int(e.GetSender()), Event: "reject_transport", Reason: err.Error()})
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return err
 	}
 	r := received{e, make(chan error, 1)}
 	select {
 	case p.in <- r:
 	case <-ctx.Done():
-		return nil, status.FromContextError(ctx.Err()).Err()
+		return ctx.Err()
 	case <-p.ctx.Done():
-		return nil, status.Error(codes.Unavailable, "node stopping")
+		return p.ctx.Err()
 	}
 	select {
 	case err := <-r.done:
 		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
+			return err
 		}
-		return &pb.Ack{}, nil
+		return nil
 	case <-ctx.Done():
-		return nil, status.FromContextError(ctx.Err()).Err()
+		return ctx.Err()
 	case <-p.ctx.Done():
-		return nil, status.Error(codes.Unavailable, "node stopping")
+		return p.ctx.Err()
 	}
 }
 func (p *process) receive(e *pb.Envelope) error {
@@ -296,6 +304,13 @@ func (p *process) sender(wg *sync.WaitGroup) {
 		case <-p.ctx.Done():
 			return
 		case e := <-p.jobs:
+			if e.Recipient == ^uint32(0) {
+				if err := p.transmit(e, func() error { return p.gossip.publish(e) }); err != nil && p.ctx.Err() == nil {
+					p.frameEvent(e, "send_error", err.Error())
+				}
+				p.queued.Add(-1)
+				continue
+			}
 			select {
 			case queues[int(e.Recipient)] <- e:
 			default:
@@ -305,53 +320,28 @@ func (p *process) sender(wg *sync.WaitGroup) {
 		}
 	}
 }
-func (p *process) sendPeer(peer int, jobs <-chan *pb.Envelope, wg *sync.WaitGroup) {
-	defer wg.Done()
-	conn, err := grpc.NewClient(p.cfg.Peers[peer].Address, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		p.Record(network.Event{Node: p.cfg.NodeID, Peer: peer, Event: "connection_error", Reason: err.Error()})
-		return
-	}
-	defer func() {
-		if err := conn.Close(); err != nil {
-			p.Record(network.Event{Node: p.cfg.NodeID, Peer: peer, Event: "close_error", Reason: err.Error()})
-		}
-	}()
-	client := pb.NewTransportClient(conn)
-	for {
+
+// Both transports share the actual-send gate, after their configured holds.
+func (p *process) transmit(e *pb.Envelope, send func() error) error {
+	p.rateMu.Lock()
+	if wait := time.Until(p.nextSend); wait > 0 {
+		timer := time.NewTimer(wait)
 		select {
+		case <-timer.C:
 		case <-p.ctx.Done():
-			return
-		case e := <-jobs:
-			p.rateMu.Lock()
-			if wait := time.Until(p.nextSend); wait > 0 {
-				timer := time.NewTimer(wait)
-				select {
-				case <-timer.C:
-				case <-p.ctx.Done():
-					timer.Stop()
-					p.rateMu.Unlock()
-					return
-				}
-			}
-			if p.ctx.Err() != nil {
-				p.rateMu.Unlock()
-				return
-			}
-			p.frameEvent(e, "send", "")
-			p.nextSend = time.Now().Add(time.Duration(p.cfg.SendGapMS) * time.Millisecond)
+			timer.Stop()
 			p.rateMu.Unlock()
-			ctx, cancel := context.WithTimeout(p.ctx, 250*time.Millisecond)
-			_, err := client.Deliver(ctx, e)
-			cancel()
-			p.queued.Add(-1)
-			if err != nil {
-				p.frameEvent(e, "send_error", err.Error())
-			} else {
-				p.frameEvent(e, "delivered", "")
-			}
+			return p.ctx.Err()
 		}
 	}
+	if p.ctx.Err() != nil {
+		p.rateMu.Unlock()
+		return p.ctx.Err()
+	}
+	p.frameEvent(e, "send", "")
+	p.nextSend = time.Now().Add(time.Duration(p.cfg.SendGapMS) * time.Millisecond)
+	p.rateMu.Unlock()
+	return send()
 }
 func (p *process) save() error {
 	root, err := p.runtime.StateRoot()
@@ -417,16 +407,29 @@ func runWithNode(parent context.Context, c Config, makeNode func(*process) (loca
 	}()
 	ctx, cancel := context.WithTimeout(parent, time.Duration(c.RunForMS)*time.Millisecond)
 	defer cancel()
-	p := &process{cfg: c, ctx: ctx, key: key, ids: ids, log: &logWriter{file: file, start: time.Now()}, in: make(chan received, c.QueueLimit), jobs: make(chan *pb.Envelope, c.QueueLimit), faults: newFaultLayer(c.Faults), seen: make(map[transfer]bool), accepted: make(map[transfer]bool), requested: make(map[transfer]bool), blocked: make(map[int]uint64), arrivals: make(map[int]arrival)}
+	p := &process{cfg: c, ctx: ctx, key: key, ids: ids, log: &logWriter{file: file, start: time.Now()}, in: make(chan received, c.QueueLimit), jobs: make(chan *pb.Envelope, c.QueueLimit), faults: newFaultLayer(c.Faults), seen: make(map[transfer]bool), accepted: make(map[transfer]bool), requested: make(map[transfer]bool), blocked: make(map[int]uint64), arrivals: make(map[int]arrival), sessions: make(map[int]*peerSession)}
 	p.runtime, err = makeNode(p)
 	if err != nil {
 		return err
 	}
+	p.gossip, err = p.newGossip()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cancel()
+		if err := p.gossip.close(); err != nil && resultErr == nil {
+			resultErr = err
+		}
+		if err := p.log.failure(); err != nil && resultErr == nil {
+			resultErr = err
+		}
+	}()
 	listener, err := net.Listen("tcp", c.Peers[c.NodeID].Address)
 	if err != nil {
 		return err
 	}
-	server := grpc.NewServer(grpc.MaxRecvMsgSize(4 << 20))
+	server := grpc.NewServer(grpc.MaxRecvMsgSize(4<<20), grpc.WaitForHandlers(true))
 	pb.RegisterTransportServer(server, p)
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
@@ -437,10 +440,13 @@ func runWithNode(parent context.Context, c Config, makeNode func(*process) (loca
 		cancel()
 		server.Stop()
 		wg.Wait()
+		p.streamWG.Wait()
 		if err := p.log.failure(); err != nil && resultErr == nil {
 			resultErr = err
 		}
 	}()
+	p.streamWG.Add(1)
+	go func() { defer p.streamWG.Done(); p.gossip.connect() }()
 	p.Record(network.Event{Node: c.NodeID, Peer: -1, Event: "listen", Reason: fmt.Sprintf("pid=%d address=%s", os.Getpid(), listener.Addr())})
 	start := func() error {
 		p.started = true

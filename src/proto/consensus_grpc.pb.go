@@ -19,14 +19,16 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Transport_Deliver_FullMethodName = "/blockchain.Transport/Deliver"
+	Transport_Exchange_FullMethodName = "/blockchain.Transport/Exchange"
 )
 
 // TransportClient is the client API for Transport service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type TransportClient interface {
-	Deliver(ctx context.Context, in *Envelope, opts ...grpc.CallOption) (*Ack, error)
+	// A long-lived authenticated peer session; requests, bodies and directed
+	// protocol messages can flow independently in both directions.
+	Exchange(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Envelope, Envelope], error)
 }
 
 type transportClient struct {
@@ -37,21 +39,26 @@ func NewTransportClient(cc grpc.ClientConnInterface) TransportClient {
 	return &transportClient{cc}
 }
 
-func (c *transportClient) Deliver(ctx context.Context, in *Envelope, opts ...grpc.CallOption) (*Ack, error) {
+func (c *transportClient) Exchange(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Envelope, Envelope], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Ack)
-	err := c.cc.Invoke(ctx, Transport_Deliver_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Transport_ServiceDesc.Streams[0], Transport_Exchange_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &grpc.GenericClientStream[Envelope, Envelope]{ClientStream: stream}
+	return x, nil
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Transport_ExchangeClient = grpc.BidiStreamingClient[Envelope, Envelope]
 
 // TransportServer is the server API for Transport service.
 // All implementations must embed UnimplementedTransportServer
 // for forward compatibility.
 type TransportServer interface {
-	Deliver(context.Context, *Envelope) (*Ack, error)
+	// A long-lived authenticated peer session; requests, bodies and directed
+	// protocol messages can flow independently in both directions.
+	Exchange(grpc.BidiStreamingServer[Envelope, Envelope]) error
 	mustEmbedUnimplementedTransportServer()
 }
 
@@ -62,8 +69,8 @@ type TransportServer interface {
 // pointer dereference when methods are called.
 type UnimplementedTransportServer struct{}
 
-func (UnimplementedTransportServer) Deliver(context.Context, *Envelope) (*Ack, error) {
-	return nil, status.Error(codes.Unimplemented, "method Deliver not implemented")
+func (UnimplementedTransportServer) Exchange(grpc.BidiStreamingServer[Envelope, Envelope]) error {
+	return status.Error(codes.Unimplemented, "method Exchange not implemented")
 }
 func (UnimplementedTransportServer) mustEmbedUnimplementedTransportServer() {}
 func (UnimplementedTransportServer) testEmbeddedByValue()                   {}
@@ -86,23 +93,12 @@ func RegisterTransportServer(s grpc.ServiceRegistrar, srv TransportServer) {
 	s.RegisterService(&Transport_ServiceDesc, srv)
 }
 
-func _Transport_Deliver_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(Envelope)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(TransportServer).Deliver(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Transport_Deliver_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TransportServer).Deliver(ctx, req.(*Envelope))
-	}
-	return interceptor(ctx, in, info, handler)
+func _Transport_Exchange_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(TransportServer).Exchange(&grpc.GenericServerStream[Envelope, Envelope]{ServerStream: stream})
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Transport_ExchangeServer = grpc.BidiStreamingServer[Envelope, Envelope]
 
 // Transport_ServiceDesc is the grpc.ServiceDesc for Transport service.
 // It's only intended for direct use with grpc.RegisterService,
@@ -110,12 +106,14 @@ func _Transport_Deliver_Handler(srv interface{}, ctx context.Context, dec func(i
 var Transport_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "blockchain.Transport",
 	HandlerType: (*TransportServer)(nil),
-	Methods: []grpc.MethodDesc{
+	Methods:     []grpc.MethodDesc{},
+	Streams: []grpc.StreamDesc{
 		{
-			MethodName: "Deliver",
-			Handler:    _Transport_Deliver_Handler,
+			StreamName:    "Exchange",
+			Handler:       _Transport_Exchange_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
 	Metadata: "src/proto/consensus.proto",
 }

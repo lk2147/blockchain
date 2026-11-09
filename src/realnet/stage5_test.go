@@ -93,7 +93,7 @@ func caseDir(t *testing.T, name string) string {
 func runStage5Case(t *testing.T, spec caseSpec) caseEvidence {
 	t.Helper()
 	dir := caseDir(t, spec.name)
-	addresses := reserveAddresses(t, 10)
+	addresses := reserveAddresses(t, 20)
 	var ids []types.ValidatorID
 	var keys []ed25519.PrivateKey
 	var peers []Peer
@@ -101,7 +101,7 @@ func runStage5Case(t *testing.T, spec caseSpec) caseEvidence {
 		key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{byte(i + 1)}, 32))
 		keys = append(keys, key)
 		ids = append(ids, types.ValidatorID(key[32:]))
-		peers = append(peers, Peer{addresses[i], hex.EncodeToString(key[32:])})
+		peers = append(peers, Peer{Address: addresses[i], PublicKey: hex.EncodeToString(key[32:]), GossipAddress: addresses[10+i]})
 	}
 	var workload [][]types.Transaction
 	for height := 1; height <= spec.target; height++ {
@@ -112,7 +112,9 @@ func runStage5Case(t *testing.T, spec caseSpec) caseEvidence {
 		}
 		workload = append(workload, []types.Transaction{tx})
 	}
-	startAt := time.Now().Add(2 * time.Second).UnixMilli()
+	// Real libp2p hosts, secure sessions and subscription mesh need bootstrap time.
+	// Keep eight seconds for the same protocol workload after the shared start.
+	startAt := time.Now().Add(4 * time.Second).UnixMilli()
 	var configs []Config
 	var commands []*exec.Cmd
 	var outputs []*bytes.Buffer
@@ -140,7 +142,7 @@ func runStage5Case(t *testing.T, spec caseSpec) caseEvidence {
 		}
 		policy := spec.policy
 		policy.Seed += int64(i)
-		cfg := Config{ChainID: "stage5", NodeID: i, F: 3, Peers: peers, PrivateKeyFile: keyPath, OutputDir: filepath.Join(dir, fmt.Sprintf("node-%02d", i)), BaseTimeoutMS: spec.timeout, RetryMS: 300, RunForMS: 8000, TargetHeights: uint64(spec.target), SendGapMS: 1, QueueLimit: 2048, ReceiveLimit: 3000, ReceiveWindowMS: 1000, BlockMS: 200, Faults: policy, Workload: workload, StartAtUnixMS: startAt}
+		cfg := Config{ChainID: "stage5", NodeID: i, F: 3, Peers: peers, PrivateKeyFile: keyPath, OutputDir: filepath.Join(dir, fmt.Sprintf("node-%02d", i)), BaseTimeoutMS: spec.timeout, RetryMS: 300, RunForMS: 12000, TargetHeights: uint64(spec.target), SendGapMS: 1, QueueLimit: 2048, ReceiveLimit: 3000, ReceiveWindowMS: 1000, BlockMS: 200, Faults: policy, Workload: workload, StartAtUnixMS: startAt}
 		data, err := json.MarshalIndent(cfg, "", "  ")
 		if err != nil {
 			t.Fatal(err)
@@ -244,6 +246,17 @@ func verifyStage5(t *testing.T, spec caseSpec, configs []Config, commands []*exe
 	for id, cfg := range configs {
 		faulty := spec.roles[id] != "" || (spec.crash && id == 0)
 		rows := readCaseLog(t, filepath.Join(cfg.OutputDir, "events.jsonl"))
+		if spec.name == "T1" || spec.name == "T2" || strings.HasPrefix(spec.name, "T8") {
+			observed := map[string]bool{}
+			for _, row := range rows {
+				observed[row.Event] = true
+			}
+			for _, event := range []string{"membership", "gossip_connect", "gossip_publish", "gossip_receive", "stream_open", "stream_send", "stream_receive"} {
+				if !observed[event] {
+					t.Fatalf("node %d did not exercise real transport event %s", id, event)
+				}
+			}
+		}
 		if !(spec.crash && id == 0) {
 			data, err := os.ReadFile(filepath.Join(cfg.OutputDir, "result.json"))
 			if err != nil {

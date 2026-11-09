@@ -1,75 +1,106 @@
-# Test status — Stage 6, 2026-11-09
+# Current checks - GossipSub and bidirectional gRPC
 
-The named real-process T1-T8 suite is implemented and passed both normal and
-race-enabled runs. The final Stage 6 race-enabled full suite also passed all
-203 tests/subtests, formatting and vet. The separate Python repeatability command
-passed. Selected raw evidence is in logs/evidence; see STAGE6.md for provenance,
-archive checks and the review boundary.
+The transport revision uses actual libp2p GossipSub for signed broadcasts and
+persistent gRPC Exchange streams for directed traffic. This page records test
+execution, not a final submission report. Earlier 203-test results and the
+selected logs/evidence describe the previous unary transport.
 
-## Actual complete-suite results
+## Executed final full suites
 
-| Entry point | Result |
+From the repository root, with the existing installed Python runtime:
+
+```text
+python tests/run_tests.py --go D:/tools/golang/bin/go.exe --output local-runs/transport-normal-final
+python tests/run_tests.py --go D:/tools/golang/bin/go.exe --race --output local-runs/transport-race-final
+```
+
+Both exited 0: all T1-T8, 205 passing tests/subtests, no missing scenarios and
+no failed tests. Both checked gofmt -l src (clean) and ran go vet ./... (exit 0).
+The race-enabled suite reported no races. The runner executes go test ./...
+-count=1 -json, adding -race for the second command. Counts include parent tests
+and subtests, not 205 distinct end-to-end scenarios. TestProcessNodeEntry is
+skipped only in the parent and executed inside actual child processes.
+
+Each evidence directory contains summary.json, raw go-test.jsonl, go-vet.log,
+per-case configs, explicitly test-only keys, and independently produced node
+events/results. They remain under ignored local-runs because they include keys.
+
+## Scenario coverage
+
+All cases launch ten real processes with n=10, f=3 and quorum seven. Honest
+ledgers are re-executed and their signed finality certificates checked. All
+recorded finalizations are checked for conflicts, not just the final snapshots.
+
+| Case | Actual check and required outcome |
 |---|---|
-| python tests/run_tests.py --go D:/tools/golang/bin/go.exe --output local-runs/stage5-normal | Exit 0; all T1-T8; 203 passing tests/subtests; formatting and vet passed |
-| python tests/run_tests.py --go D:/tools/golang/bin/go.exe --race --output local-runs/stage5-race | Exit 0; all T1-T8; 203 passing tests/subtests; no reported races; formatting and vet passed |
+| T1 | Normal agreement on two-block history and expected state |
+| T2 | Actual duplicated/reordered transmissions; no duplicate-created quorum, conflicting signing or finalization |
+| T3 | Every honest node rejects/logs bad proposal signatures and wrong-domain votes, then progresses |
+| T4 | Duplicate nonce batch rejected atomically; nine old-candidate replay sends verified; finalized ordered transactions applied once |
+| T5 | Complete initial loss for 1200ms; no protocol send/finalization before it ends; later agreement |
+| T6 | Separate silent and actually killed proposer cases; honest survivors time out and progress |
+| T7 | Three Byzantine processes sign/transmit both candidates in both phases; seven honest nodes agree on one block |
+| T8 | Two independent controlled runs preserve exact signed transaction order and expected state; actual drop/duplicate/reorder/replay sends required |
 
-Both directories contain summary.json, go-test.jsonl, go-vet.log and per-case
-configurations, logs, node results and verified.json. They are ignored by Git
-because they include explicitly test-only private-key fixtures. Counts include
-parent tests and subtests, not 203 independent end-to-end scenarios.
+T1/T2/T8 additionally require each node to log membership, GossipSub connection,
+publication and reception, and gRPC stream opening, sending and reception.
+All integration cases retain actual hold-deadline/rate checks and matching
+accepted-header-before-body gates. T7 targets one height; other cases target two.
+T5's nonzero-delay coverage is provided by T2/T8; T5 itself stresses total loss.
 
-TestProcessNodeEntry is skipped only in the parent process; it runs inside the
-actual child node processes. The runner refuses success if any T1-T8 case is
-missing. Five packages have direct tests: crypto, state, block, consensus and
-realnet; real integration tests exercise the production node adapter/transport.
+New focused tests in hybrid_test.go passed in normal and race-enabled suites:
 
-## T1-T8 results
+- TestGossipRelaysWithoutDirectConnection: authenticated 0--1--2 propagation
+  across real sockets while 0 and 2 have no direct connection.
+- TestStreamBidirectionalReconnectAndMembership: both ends write protocol frames
+  on the shared session; closing/reconnecting preserves communication; mismatched
+  membership and invalid handshake signatures are rejected by verification.
+- The retained real socket rejection test now obtains the matching body_request
+  over the same bidirectional RPC used to send the header. It still verifies
+  invalid header/body rejection and temporary peer blocking/unblocking.
 
-All cases use ten distinct Go processes communicating over real TCP/gRPC, with
-n=10, f=3, quorum=7 and fixed, explicitly test-only key fixtures. Each honest
-ledger is independently executed and every finality certificate authenticated.
+Existing crypto/state/block/consensus tests retain reference encodings, known
+hashes/Merkle roots, ownership/nonces, locking/NIL and invalid certificate cases.
 
-| ID | Fault/input | Observed outcome | Invariant |
-|---|---|---|---|
-| T1 | Two ordered transactions, no injected faults | All ten nodes finalized the same two blocks/root | Normal agreement and execution |
-| T2 | 100% duplication, 2-8 ms holds and every fourth admission held 40 ms longer | Real duplicate/reordered sends, duplicate rejections, matching two-block histories | At most one honest signed vote per slot; unique authenticated quorums |
-| T3 | One faulty proposer sends an invalid proposal signature and wrongly domain-signed votes | Every honest node logged both rejection reasons; nine honest nodes progressed in a later round | Invalid signatures/domains cannot affect consensus |
-| T4 | Faulty proposer sends a body containing nonce-1 transaction twice; after each peer finalizes, replays the old candidate | All nine honest nodes rejected the duplicate nonce and old candidate; finalized transactions occur once in the exact expected order | Atomic rejection and at-most-once execution |
-| T5 | All outgoing protocol messages dropped for 1200 ms after a shared real-clock start, then injection disabled | No send/finalization before the loss window ended; all ten nodes subsequently finalized two blocks | Safety during loss, progress after stabilization |
-| T6 | Silent proposer, then a separate run terminating the actual round-0 proposer process before consensus starts | Both cases triggered timeouts and later-round decisions; nine surviving honest nodes finalized two blocks | Faulty proposer cannot permanently stall the chain |
-| T7 | Three faulty processes sign/transmit conflicting PREVOTEs/PRECOMMITs to two honest groups | All seven honest nodes finalized the same valid block; signed conflicts verified and detected | No conflicting finalization at the fault bound |
-| T8 | Same fixed keys, ordered workload, seed and fault settings in two independent real runs | Same exact signed transaction order and root; timestamps/fault counts may vary | Student-approved repeatability interpretation |
+## Failure investigated during this change
 
-T5 deliberately tests complete pre-stable loss. Configured delays/holds are
-separately exercised by T2 and T8 and checked against actual RPC-attempt times.
-T7 targets one block; other cases target two. Faulty/crashed processes are not
-counted as honest and are never assigned successful ledger results.
+The first full race run at local-runs/transport-race failed T2 because honest
+nodes finalized only one of the required two blocks within the run. Its raw
+failure evidence is retained. No data race was reported. Logs showed repeated
+old finality-certificate publications competing with next-height traffic under
+gossip replication and 100% duplication.
 
-## Other checks retained
+The production retry policy now re-advertises old finalized headers every fourth
+retry tick while keeping current proposal/vote retries and initial decisions
+prompt. Requested bodies remain immediate. The focused race T2 rerun at
+local-runs/transport-race-t2-fixed passed, followed by both final full suites.
+The duplicate policy, two-block requirement, quorum, safety, hold and state
+assertions were not relaxed. Normal cancellation/deadline is treated as expected
+PubSub shutdown rather than falsely logged as a close failure.
 
-Crypto reference vectors/domain separation; ownership/nonces; Merkle reference
-roots/tree shapes; block validation; vote counting, locking, NIL, late/future
-rounds; real transport authentication; invalid header/body delivery; actual peer
-blocking/unblock; outbound rate and header-before-body gates remain tested.
-Recorded finalization events are inspected as well as saved results, checking
-that no honest process decided twice or that different honest decisions disagree.
+## Configuration and execution limits
 
-The final targeted replay/rerun check was also rerun with race detection after
-adding packet-ID binding for the deliberate T4 replays and requiring actual
-fault transmissions in both T8 runs; it is reported in STAGE5.md.
+The Python preflight accepted generated ten-node configs and rejected reordered
+membership and missing GossipAddress endpoints. It also requires the config
+directory to cover the complete configured validator set. Nodes check the shared
+fingerprint in signed stream handshakes and log it at startup.
 
-## Regular launcher
+The final production launcher command also exited 0:
 
-The production CLI was rebuilt and run through the Python launcher after the
-peer-IO change. All ten processes produced matching two-block histories/root.
-Evidence: local-runs/stage5-cli-smoke. Observed injections were 190 drops,
-251 duplicates, 220 reorder holds and 297 replays, plus 73 retried send errors.
-These are observed counts, not fixed predictions for another real run.
+```text
+python tests/run_local_cluster.py --go D:/tools/golang/bin/go.exe --faults --base-port 29750 --run-ms 15000 --run-dir local-runs/transport-cli-final
+```
 
-## Review boundary and limitations
+Ten distinct node processes each saved two matching blocks and root
+a586608a2496b4cf1190c712c3467279081d1b22eafa3d7494d6266fcafb8321.
+This fresh random-key experiment observed 18 drops, 32 duplicate, 23 reorder and
+23 replay plans. Counts vary with real scheduling; the Go integration verifier
+separately requires actual transmissions for its fault-coverage assertions.
 
-Stage 6 prepared the report, archive/structure verification and final evidence.
-The student must still review the report and demonstrate understanding before
-submission. Safe crash recovery/restart, encrypted remote deployment,
-production readiness and exhaustive exploration of all Byzantine schedules are
-not claimed. T6 tests crash tolerance of the surviving cluster, not restart safety.
+Fault controls and send limits apply before authored gossip publications and
+directed stream writes. Libp2p control/automatic relay traffic is outside those
+artificial controls. This is not full kernel-packet conditioning. Connections
+are loopback-only; process restart recovery, public deployment, a live Python
+solver API and arbitrary configurable Byzantine strategies are not claimed.
+See REAL_NETWORK.md for code paths and current usage. Final report/ZIP work is
+deferred by the student until coding/testing is accepted.

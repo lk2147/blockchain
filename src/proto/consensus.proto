@@ -18,7 +18,8 @@ message Envelope {
     bytes payload = 9;
     bytes signature = 10;
 }
-message Ack {}
 service Transport {
-    rpc Deliver(Envelope) returns (Ack);
+    // A long-lived authenticated peer session; requests, bodies and directed
+    // protocol messages can flow independently in both directions.
+    rpc Exchange(stream Envelope) returns (stream Envelope);
 }

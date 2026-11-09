@@ -512,6 +512,26 @@ If a requirement cannot be completed, state that clearly. Never mark an incomple
 
 # Current workflow and handoff
 
+Latest explicit direction: complete coding and testing before any final report
+or ZIP work. The student authorized replacing unary/direct-broadcast networking
+with actual libp2p GossipSub and bidirectional gRPC. The current implementation
+publishes headers/votes through GossipSub and uses Exchange streams for matching
+body requests, bodies and directed protocol messages. Keep source validation and
+the configurable pre-publication/pre-stream fault controls. Libp2p control and
+automatic relay traffic are not covered by those artificial message holds.
+Peer configs need distinct Address and GossipAddress endpoints. Shared ordered
+membership is checked by Python preflight and signed stream handshakes, and
+logged as a fingerprint. The new transport passed the complete normal and
+race-enabled T1-T8 suites (205 tests/subtests each), formatting and vet. Evidence
+is in local-runs/transport-normal-final and transport-race-final. An initial
+race T2 liveness failure was fixed by reducing old decision-advertisement retry
+traffic; its failure evidence is retained. Earlier 203-test results describe
+the old transport. Use current
+tests/REAL_NETWORK.md and tests/TEST_STATUS.md for transport/check status.
+Do not start reporting, packaging, a Python solver API or configurable Byzantine
+strategy features automatically as part of this transport change.
+
+Historical record for the earlier unary-transport snapshot:
 Stages 0-5 were reviewed/advanced with the student, who explicitly authorized
 Stage 6. Stage 6 prepared the review report, selected raw evidence, Python-only
 repeatability/packaging scripts and verified source archive. The final full

@@ -1,6 +1,7 @@
 # Blockchain Lab01
 
-This project runs independent Go blockchain nodes over real TCP/gRPC connections.
+This project runs independent Go blockchain nodes over real libp2p GossipSub
+connections and persistent bidirectional gRPC streams.
 Python is the only launcher/experiment scripting language. There is no virtual
 network backend. Each node validates signatures, executes owned key-value updates,
 and finalizes its own ledger and Merkle state commitment.
@@ -9,7 +10,13 @@ and finalizes its own ledger and Merkle state commitment.
 
 - Python 3.9+; the launcher uses only the standard library.
 - The installed Go toolchain matching go.mod; keep the pinned dependencies.
-- Available localhost TCP ports (default: 29000 through 29009).
+- Available localhost TCP ports (default: gRPC 29000-29009 and gossip 29010-29019).
+
+Headers and votes are published through GossipSub. Accepted-header body requests,
+bodies and directed messages travel over the gRPC Exchange stream. Either end
+can send independently on that same stream; disconnected sessions reconnect.
+Libp2p uses the validator's Ed25519 identity, Noise and Yamux over TCP. The static
+peer list supplies bootstrap addresses; it is not a dynamic validator registry.
 
 Open any terminal in the repository root (the folder containing go.mod and this
 README; for example, `D:/applied-blockchain/blockchain`, or the extracted
@@ -85,6 +92,12 @@ timeouts, and `RetryMS` controls retransmission. Configs are read at startup, no
 reloaded live. Keep the shared chain/validator list consistent and each node's
 ID/key unchanged. Editable defaults and `NODE_FAULT_OVERRIDES` at the top of the
 Python script apply only when generating new configs.
+
+Each Peers entry now contains Address (gRPC), GossipAddress (libp2p TCP) and
+PublicKey. Old unary-gRPC configurations must be regenerated in a fresh directory.
+The Python launcher rejects different ordered peer lists across node configs.
+Nodes log the shared membership fingerprint and require it in signed stream
+handshakes. Gossip topic names also include that fingerprint.
 
 ## Start one node per terminal using Python
 
@@ -182,13 +195,17 @@ Ed25519 transport signatures authenticate sender/recipient and messages. This is
 not a production or public-internet deployment. Workload transactions are preloaded
 signed client inputs. Dynamic membership and safe restart/recovery are not implemented.
 
-See [real networking](tests/REAL_NETWORK.md) and [Stage 4](tests/STAGE4.md).
-Stage 5's real-network T1-T8 suite has passed normal and race-enabled runs.
-Stage 6 includes a review report, selected raw evidence and a source archive.
-Read [the report](report/REPORT.md) and [Stage 6 checks](tests/STAGE6.md).
-The student must review the explanations before submission.
+The message controls act before local gossip publications and directed stream
+writes. GossipSub's connection/control traffic and automatic relay forwarding
+are managed by libp2p, outside these artificial holds and application send limits.
+They are not a kernel-packet network conditioner. A send/publish event is not
+proof of application acceptance or finalization; check receiver events and ledgers.
 
-## Repeatability and submission
+See [real networking](tests/REAL_NETWORK.md) for the current design and test
+commands. Historical stage reports describe earlier snapshots. Final report and
+packaging work is deferred until the implementation and required checks pass.
+
+## Repeatability
 
 Run only the controlled rerun experiment (two independent ten-process clusters):
 
@@ -200,23 +217,9 @@ Optional arguments are --go, --race and --output (a fresh evidence directory).
 This checks signed transaction order and final state, plus the Go T8 invariants;
 it does not compare timestamps or incidental network log order.
 
-Selected observed evidence is under logs/evidence, without private keys.
-See logs/README.md for provenance and interpretation. Generate new experiments
-with the scripts rather than attempting to restart recorded runs.
-
-To build a fresh ZIP after reviewing the project:
-
-```text
-python tests/package_submission.py
-```
-
-The output is submission/blockchain.zip with a blockchain/ root, a per-file
-SHA-256 manifest and a separate archive checksum. Existing archives are not
-overwritten; use --output submission/another-name.zip for another copy. The
-archive includes source, tests, documentation and selected logs, and excludes
-local-runs, private key files and executables. After extracting, open a terminal
-in the extracted blockchain folder and use the same quick-start/test commands.
-The Python packaging script uses the standard library only.
+Current evidence is saved under the fresh local-runs directory printed by the
+runner. Older logs/evidence describes the earlier unary transport. Generate new
+experiments with the scripts rather than attempting to restart recorded runs.
 
 ## Protobuf maintenance
 
