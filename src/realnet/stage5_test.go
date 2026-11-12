@@ -16,18 +16,20 @@ import (
 
 	"blockchain-lab01/src/block"
 	crypt "blockchain-lab01/src/crypto"
+	"blockchain-lab01/src/ledger"
 	"blockchain-lab01/src/network"
 	"blockchain-lab01/src/state"
 	"blockchain-lab01/src/types"
 )
 
 type caseSpec struct {
-	name    string
-	roles   map[int]string
-	crash   bool
-	policy  Policy
-	target  int
-	timeout uint64
+	name      string
+	roles     map[int]string
+	crash     bool
+	policy    Policy
+	target    int
+	timeout   uint64
+	behaviors map[int]string
 }
 type caseEvidence struct {
 	Root         string
@@ -77,6 +79,14 @@ func TestStage5(t *testing.T) {
 	})
 }
 
+func TestConfiguredBehaviors(t *testing.T) {
+	for _, behavior := range []string{"invalid_signature", "wrong_domain", "duplicate_transaction", "replay_transaction", "silent_proposer", "crashed_proposer"} {
+		t.Run(behavior, func(t *testing.T) {
+			runStage5Case(t, caseSpec{name: "configured-" + behavior, target: 2, timeout: 700, behaviors: map[int]string{0: behavior}})
+		})
+	}
+}
+
 func caseDir(t *testing.T, name string) string {
 	t.Helper()
 	root := os.Getenv("LAB01_EVIDENCE_DIR")
@@ -115,6 +125,14 @@ func runStage5Case(t *testing.T, spec caseSpec) caseEvidence {
 	// Real libp2p hosts, secure sessions and subscription mesh need bootstrap time.
 	// Keep eight seconds for the same protocol workload after the shared start.
 	startAt := time.Now().Add(4 * time.Second).UnixMilli()
+	fixture, err := json.Marshal(workload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixturePath := filepath.Join(dir, "test-input.json")
+	if err = os.WriteFile(fixturePath, fixture, 0600); err != nil {
+		t.Fatal(err)
+	}
 	var configs []Config
 	var commands []*exec.Cmd
 	var outputs []*bytes.Buffer
@@ -142,7 +160,8 @@ func runStage5Case(t *testing.T, spec caseSpec) caseEvidence {
 		}
 		policy := spec.policy
 		policy.Seed += int64(i)
-		cfg := Config{ChainID: "stage5", NodeID: i, F: 3, Peers: peers, PrivateKeyFile: keyPath, OutputDir: filepath.Join(dir, fmt.Sprintf("node-%02d", i)), BaseTimeoutMS: spec.timeout, RetryMS: 300, RunForMS: 12000, TargetHeights: uint64(spec.target), SendGapMS: 1, QueueLimit: 2048, ReceiveLimit: 3000, ReceiveWindowMS: 1000, BlockMS: 200, Faults: policy, Workload: workload, StartAtUnixMS: startAt}
+		cfg := Config{ChainID: "stage5", NodeID: i, F: 3, Peers: peers, PrivateKeyFile: keyPath, OutputDir: filepath.Join(dir, fmt.Sprintf("node-%02d", i)), BaseTimeoutMS: spec.timeout, RetryMS: 300, RunForMS: 12000, TargetHeights: uint64(spec.target), SendGapMS: 1, QueueLimit: 2048, ReceiveLimit: 3000, ReceiveWindowMS: 1000, BlockMS: 200, Faults: policy, StartAtUnixMS: startAt, Trace: true, Behavior: spec.behaviors[i]}
+		cfg.Defaults()
 		data, err := json.MarshalIndent(cfg, "", "  ")
 		if err != nil {
 			t.Fatal(err)
@@ -152,7 +171,7 @@ func runStage5Case(t *testing.T, spec caseSpec) caseEvidence {
 			t.Fatal(err)
 		}
 		cmd := exec.CommandContext(ctx, exe, "-test.run=^TestProcessNodeEntry$", "-test.v")
-		cmd.Env = append(os.Environ(), "LAB01_CHILD_CONFIG="+path, "LAB01_FAULTY_ROLE="+spec.roles[i])
+		cmd.Env = append(os.Environ(), "LAB01_CHILD_CONFIG="+path, "LAB01_FAULTY_ROLE="+spec.roles[i], "LAB01_TEST_WORKLOAD="+fixturePath)
 		out := &bytes.Buffer{}
 		cmd.Stdout = out
 		cmd.Stderr = out
@@ -186,10 +205,28 @@ func runStage5Case(t *testing.T, spec caseSpec) caseEvidence {
 		}
 		t.Logf("killed actual proposer PID %d before consensus start", commands[0].Process.Pid)
 	}
+	// All valid workload enters a live node through a real client RPC. Honest
+	// peers obtain it through GossipSub, not preloaded configuration/shared RAM.
+	for time.Now().UnixMilli() < startAt+100 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	for height, batch := range workload {
+		if height > 0 {
+			waitForCommit(t, configs[9].OutputDir, uint64(height), time.Now().Add(5*time.Second))
+		}
+		for _, tx := range batch {
+			clientCtx, stop := context.WithTimeout(ctx, 2*time.Second)
+			_, err := SubmitTransaction(clientCtx, configs[9].Peers[9].Address, tx)
+			stop()
+			if err != nil {
+				t.Fatalf("real transaction submission failed: %v", err)
+			}
+		}
+	}
 	for i, cmd := range commands {
 		err := cmd.Wait()
 		waited[i] = true
-		if spec.crash && i == 0 {
+		if (spec.crash && i == 0) || spec.behaviors[i] == "crashed_proposer" {
 			if err == nil {
 				t.Fatal("crashed process unexpectedly exited successfully")
 			}
@@ -244,7 +281,7 @@ func verifyStage5(t *testing.T, spec caseSpec, configs []Config, commands []*exe
 	equivocated := make(map[int]map[types.VotePhase]map[types.Hash]bool)
 	actuallySent := make(map[int]map[types.VotePhase]map[types.Hash]bool)
 	for id, cfg := range configs {
-		faulty := spec.roles[id] != "" || (spec.crash && id == 0)
+		faulty := spec.roles[id] != "" || spec.behaviors[id] != "" || (spec.crash && id == 0)
 		rows := readCaseLog(t, filepath.Join(cfg.OutputDir, "events.jsonl"))
 		if spec.name == "T1" || spec.name == "T2" || strings.HasPrefix(spec.name, "T8") {
 			observed := map[string]bool{}
@@ -257,7 +294,7 @@ func verifyStage5(t *testing.T, spec caseSpec, configs []Config, commands []*exe
 				}
 			}
 		}
-		if !(spec.crash && id == 0) {
+		if !(spec.crash && id == 0) && spec.behaviors[id] != "crashed_proposer" {
 			data, err := os.ReadFile(filepath.Join(cfg.OutputDir, "result.json"))
 			if err != nil {
 				t.Fatal(err)
@@ -270,13 +307,22 @@ func verifyStage5(t *testing.T, spec caseSpec, configs []Config, commands []*exe
 				t.Fatal("result is not from the expected independent process")
 			}
 			if !faulty {
-				if len(result.Ledger) != spec.target {
-					t.Fatalf("%s node %d finalized %d blocks, want %d", spec.name, id, len(result.Ledger), spec.target)
+				db, err := ledger.Open(filepath.Join(cfg.OutputDir, "ledger.db"), cfg.ChainID, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diskLedger, readErr := db.ReadAll()
+				closeErr := db.Close()
+				if readErr != nil || closeErr != nil {
+					t.Fatalf("disk ledger read: %v %v", readErr, closeErr)
+				}
+				if len(diskLedger) != spec.target || result.Height != uint64(spec.target) {
+					t.Fatalf("%s node %d finalized %d blocks, want %d", spec.name, id, len(diskLedger), spec.target)
 				}
 				var current state.State
 				var parent types.Hash
 				var hashes []types.Hash
-				for j, f := range result.Ledger {
+				for j, f := range diskLedger {
 					height := uint64(j + 1)
 					if f.OriginRound > f.Round {
 						t.Fatal("invalid origin/decision round")
@@ -322,6 +368,9 @@ func verifyStage5(t *testing.T, spec caseSpec, configs []Config, commands []*exe
 					}
 					if (spec.crash || spec.roles[0] == "silent" || spec.roles[0] == "invalid" || spec.roles[0] == "transaction_replay") && height == 1 && f.Round == 0 {
 						t.Fatal("faulty round-zero proposer did not require a later round")
+					}
+					if height == 1 && f.Round == 0 && (spec.behaviors[0] == "invalid_signature" || spec.behaviors[0] == "wrong_domain" || spec.behaviors[0] == "silent_proposer" || spec.behaviors[0] == "crashed_proposer") {
+						t.Fatal("configured faulty proposer did not require round advancement")
 					}
 				}
 				root, err := current.Root("stage5")
@@ -394,7 +443,40 @@ func verifyStage5(t *testing.T, spec caseSpec, configs []Config, commands []*exe
 			t.Fatal("no honest receiver detected equivocation")
 		}
 	}
+	if spec.behaviors[0] == "replay_transaction" && ev.Counts["transaction_replay"] < 1 {
+		t.Fatal("configured replay behavior not exercised")
+	}
+	if spec.behaviors[0] == "duplicate_transaction" {
+		found := false
+		for id := 1; id < 10; id++ {
+			for _, row := range readCaseLog(t, filepath.Join(configs[id].OutputDir, "events.jsonl")) {
+				if row.Event == "transaction_reject" && strings.Contains(row.Reason, "duplicate transaction") {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatal("configured duplicate transaction not rejected")
+		}
+	}
 	return ev
+}
+
+func waitForCommit(t *testing.T, output string, height uint64, until time.Time) {
+	t.Helper()
+	for time.Now().Before(until) {
+		raw, err := os.ReadFile(filepath.Join(output, "events.jsonl"))
+		if err == nil {
+			for _, line := range bytes.Split(raw, []byte{'\n'}) {
+				var e logRow
+				if json.Unmarshal(line, &e) == nil && e.Event == "state_commit" && e.Height >= height {
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("node did not persist height %d before the next client submission", height)
 }
 
 func readCaseLog(t *testing.T, path string) []logRow {

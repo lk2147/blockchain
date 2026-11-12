@@ -54,12 +54,8 @@ func Execute(chainID string, initial State, txs []types.Transaction) (State, err
 }
 
 func apply(chainID string, s *State, tx types.Transaction) error {
-	if err := crypt.VerifyTransaction(chainID, tx); err != nil {
-		return fmt.Errorf("authentication: %w", err)
-	}
-	prefix := hex.EncodeToString(tx.Sender[:]) + "/"
-	if !strings.HasPrefix(tx.TargetKey, prefix) || len(tx.TargetKey) == len(prefix) {
-		return fmt.Errorf("target key is not an owned nonempty record")
+	if err := ValidateTransaction(chainID, tx); err != nil {
+		return err
 	}
 	last := s.nonces[tx.Sender]
 	if last == math.MaxUint64 {
@@ -70,5 +66,21 @@ func apply(chainID string, s *State, tx types.Transaction) error {
 	}
 	s.records[tx.TargetKey] = append([]byte(nil), tx.Value...)
 	s.nonces[tx.Sender] = tx.Nonce
+	return nil
+}
+
+// ValidateTransaction checks admission rules shared by execution and mempool.
+// Nonce ordering against a particular state is checked separately.
+func ValidateTransaction(chainID string, tx types.Transaction) error {
+	if err := crypt.VerifyTransaction(chainID, tx); err != nil {
+		return fmt.Errorf("authentication: %w", err)
+	}
+	prefix := hex.EncodeToString(tx.Sender[:]) + "/"
+	if !strings.HasPrefix(tx.TargetKey, prefix) || len(tx.TargetKey) == len(prefix) {
+		return fmt.Errorf("target key is not an owned nonempty record")
+	}
+	if tx.Nonce == 0 {
+		return fmt.Errorf("nonce must start at 1")
+	}
 	return nil
 }

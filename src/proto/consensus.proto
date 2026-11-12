@@ -18,7 +18,11 @@ message Envelope {
     bytes payload = 9;
     bytes signature = 10;
 }
+message SubmitRequest { bytes transaction = 1; }
+message SubmitReply { bytes transaction_id = 1; }
 service Transport {
+    // Client transaction ingress; peer propagation remains authenticated GossipSub.
+    rpc Submit(SubmitRequest) returns (SubmitReply);
     // A long-lived authenticated peer session; requests, bodies and directed
     // protocol messages can flow independently in both directions.
     rpc Exchange(stream Envelope) returns (stream Envelope);

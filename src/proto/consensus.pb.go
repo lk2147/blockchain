@@ -139,6 +139,94 @@ func (x *Envelope) GetSignature() []byte {
 	return nil
 }
 
+type SubmitRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Transaction   []byte                 `protobuf:"bytes,1,opt,name=transaction,proto3" json:"transaction,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitRequest) Reset() {
+	*x = SubmitRequest{}
+	mi := &file_src_proto_consensus_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitRequest) ProtoMessage() {}
+
+func (x *SubmitRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_src_proto_consensus_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitRequest.ProtoReflect.Descriptor instead.
+func (*SubmitRequest) Descriptor() ([]byte, []int) {
+	return file_src_proto_consensus_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *SubmitRequest) GetTransaction() []byte {
+	if x != nil {
+		return x.Transaction
+	}
+	return nil
+}
+
+type SubmitReply struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TransactionId []byte                 `protobuf:"bytes,1,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitReply) Reset() {
+	*x = SubmitReply{}
+	mi := &file_src_proto_consensus_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitReply) ProtoMessage() {}
+
+func (x *SubmitReply) ProtoReflect() protoreflect.Message {
+	mi := &file_src_proto_consensus_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitReply.ProtoReflect.Descriptor instead.
+func (*SubmitReply) Descriptor() ([]byte, []int) {
+	return file_src_proto_consensus_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *SubmitReply) GetTransactionId() []byte {
+	if x != nil {
+		return x.TransactionId
+	}
+	return nil
+}
+
 var File_src_proto_consensus_proto protoreflect.FileDescriptor
 
 const file_src_proto_consensus_proto_rawDesc = "" +
@@ -156,8 +244,13 @@ const file_src_proto_consensus_proto_rawDesc = "" +
 	"\x05round\x18\b \x01(\x04R\x05round\x12\x18\n" +
 	"\apayload\x18\t \x01(\fR\apayload\x12\x1c\n" +
 	"\tsignature\x18\n" +
-	" \x01(\fR\tsignature2G\n" +
-	"\tTransport\x12:\n" +
+	" \x01(\fR\tsignature\"1\n" +
+	"\rSubmitRequest\x12 \n" +
+	"\vtransaction\x18\x01 \x01(\fR\vtransaction\"4\n" +
+	"\vSubmitReply\x12%\n" +
+	"\x0etransaction_id\x18\x01 \x01(\fR\rtransactionId2\x85\x01\n" +
+	"\tTransport\x12<\n" +
+	"\x06Submit\x12\x19.blockchain.SubmitRequest\x1a\x17.blockchain.SubmitReply\x12:\n" +
 	"\bExchange\x12\x14.blockchain.Envelope\x1a\x14.blockchain.Envelope(\x010\x01B\x1cZ\x1ablockchain-lab01/src/protob\x06proto3"
 
 var (
@@ -172,15 +265,19 @@ func file_src_proto_consensus_proto_rawDescGZIP() []byte {
 	return file_src_proto_consensus_proto_rawDescData
 }
 
-var file_src_proto_consensus_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_src_proto_consensus_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_src_proto_consensus_proto_goTypes = []any{
-	(*Envelope)(nil), // 0: blockchain.Envelope
+	(*Envelope)(nil),      // 0: blockchain.Envelope
+	(*SubmitRequest)(nil), // 1: blockchain.SubmitRequest
+	(*SubmitReply)(nil),   // 2: blockchain.SubmitReply
 }
 var file_src_proto_consensus_proto_depIdxs = []int32{
-	0, // 0: blockchain.Transport.Exchange:input_type -> blockchain.Envelope
-	0, // 1: blockchain.Transport.Exchange:output_type -> blockchain.Envelope
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
+	1, // 0: blockchain.Transport.Submit:input_type -> blockchain.SubmitRequest
+	0, // 1: blockchain.Transport.Exchange:input_type -> blockchain.Envelope
+	2, // 2: blockchain.Transport.Submit:output_type -> blockchain.SubmitReply
+	0, // 3: blockchain.Transport.Exchange:output_type -> blockchain.Envelope
+	2, // [2:4] is the sub-list for method output_type
+	0, // [0:2] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -197,7 +294,7 @@ func file_src_proto_consensus_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_src_proto_consensus_proto_rawDesc), len(file_src_proto_consensus_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   1,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

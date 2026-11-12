@@ -19,6 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	Transport_Submit_FullMethodName   = "/blockchain.Transport/Submit"
 	Transport_Exchange_FullMethodName = "/blockchain.Transport/Exchange"
 )
 
@@ -26,6 +27,8 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type TransportClient interface {
+	// Client transaction ingress; peer propagation remains authenticated GossipSub.
+	Submit(ctx context.Context, in *SubmitRequest, opts ...grpc.CallOption) (*SubmitReply, error)
 	// A long-lived authenticated peer session; requests, bodies and directed
 	// protocol messages can flow independently in both directions.
 	Exchange(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Envelope, Envelope], error)
@@ -37,6 +40,16 @@ type transportClient struct {
 
 func NewTransportClient(cc grpc.ClientConnInterface) TransportClient {
 	return &transportClient{cc}
+}
+
+func (c *transportClient) Submit(ctx context.Context, in *SubmitRequest, opts ...grpc.CallOption) (*SubmitReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitReply)
+	err := c.cc.Invoke(ctx, Transport_Submit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *transportClient) Exchange(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Envelope, Envelope], error) {
@@ -56,6 +69,8 @@ type Transport_ExchangeClient = grpc.BidiStreamingClient[Envelope, Envelope]
 // All implementations must embed UnimplementedTransportServer
 // for forward compatibility.
 type TransportServer interface {
+	// Client transaction ingress; peer propagation remains authenticated GossipSub.
+	Submit(context.Context, *SubmitRequest) (*SubmitReply, error)
 	// A long-lived authenticated peer session; requests, bodies and directed
 	// protocol messages can flow independently in both directions.
 	Exchange(grpc.BidiStreamingServer[Envelope, Envelope]) error
@@ -69,6 +84,9 @@ type TransportServer interface {
 // pointer dereference when methods are called.
 type UnimplementedTransportServer struct{}
 
+func (UnimplementedTransportServer) Submit(context.Context, *SubmitRequest) (*SubmitReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method Submit not implemented")
+}
 func (UnimplementedTransportServer) Exchange(grpc.BidiStreamingServer[Envelope, Envelope]) error {
 	return status.Error(codes.Unimplemented, "method Exchange not implemented")
 }
@@ -93,6 +111,24 @@ func RegisterTransportServer(s grpc.ServiceRegistrar, srv TransportServer) {
 	s.RegisterService(&Transport_ServiceDesc, srv)
 }
 
+func _Transport_Submit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TransportServer).Submit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Transport_Submit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TransportServer).Submit(ctx, req.(*SubmitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Transport_Exchange_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(TransportServer).Exchange(&grpc.GenericServerStream[Envelope, Envelope]{ServerStream: stream})
 }
@@ -106,7 +142,12 @@ type Transport_ExchangeServer = grpc.BidiStreamingServer[Envelope, Envelope]
 var Transport_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "blockchain.Transport",
 	HandlerType: (*TransportServer)(nil),
-	Methods:     []grpc.MethodDesc{},
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Submit",
+			Handler:    _Transport_Submit_Handler,
+		},
+	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "Exchange",

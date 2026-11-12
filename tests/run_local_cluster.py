@@ -53,19 +53,28 @@ def prepare_cluster(binary, args):
             raise ValueError(f"Unknown node in NODE_FAULT_OVERRIDES: {node_id}")
         path = directory / f"node-{node_id:02d}.json"
         config = json.loads(path.read_text(encoding="utf-8"))
-        config["Faults"].update(changes)
+        config.setdefault("Faults", {"Seed": node_id + 1}).update(changes)
         path.write_text(json.dumps(config, indent=2), encoding="utf-8")
     return directory
 
 
 def load_configs(directory):
-    paths = sorted(directory.glob("node-*.json"))
+    paths = sorted(directory.glob("node-*.json"), key=lambda p: int(p.stem.split("-")[-1]))
     if len(paths) < 8 or (len(paths) - 1) % 3:
         raise ValueError("Configuration directory must contain a valid complete validator set.")
     configs = []
     membership = None
     for node_id, path in enumerate(paths):
         config = json.loads(path.read_text(encoding="utf-8"))
+        if config.get("NetworkFile"):
+            shared = Path(config["NetworkFile"])
+            if not shared.is_absolute():
+                shared = path.parent / shared
+            config.update(json.loads(shared.read_text(encoding="utf-8")))
+        config.setdefault("Behavior", "honest")
+        config.setdefault("OutputDir", f"node-{node_id:02d}")
+        config.setdefault("RunForMS", 0)
+        config.setdefault("TargetHeights", 0)
         if config["NodeID"] != node_id:
             raise ValueError(f"Unexpected node ID in {path}")
         if len(config["Peers"]) != len(paths) or config["F"] != (len(paths) - 1) // 3:
@@ -80,6 +89,8 @@ def load_configs(directory):
         if not output.is_absolute():
             output = path.parent / output
         configs.append((path, config, output))
+    if sum(c[1]["Behavior"] != "honest" for c in configs) > configs[0][1]["F"]:
+        raise ValueError("Configured dishonest node count exceeds f; safety assumptions would not hold.")
     return configs
 
 
@@ -90,7 +101,7 @@ def require_fresh_output(configs):
             raise ValueError(f"Existing node output at {output}; initialize a fresh cluster.")
 
 
-def run_one_node(binary, path):
+def run_one_node(binary, path, expected_crash=False):
     """Keep this real Go node attached to the user's current terminal."""
     process = subprocess.Popen([str(binary), "-config", str(path)], cwd=REPO)
     try:
@@ -104,7 +115,7 @@ def run_one_node(binary, path):
             except subprocess.TimeoutExpired:
                 pass
             raise
-        if code:
+        if code and not (expected_crash and code == 86):
             raise RuntimeError(f"Node exited with code {code}.")
     finally:
         stop_processes([process])
@@ -123,16 +134,21 @@ def stop_processes(processes):
             process.wait()
 
 
-def verify_results(configs):
+def verify_results(configs, binary):
     expected_headers = None
     expected_root = None
     pids = set()
     counts = Counter()
     for path, config, output in configs:
+        if config["Behavior"] != "honest":
+            print(f"Node {config['NodeID']:2}: behavior={config['Behavior']} (excluded from honest agreement checks)")
+            continue
         result = json.loads((output / "result.json").read_text(encoding="utf-8"))
-        ledger = result["Ledger"]
+        inspected = subprocess.run([str(binary), "-config", str(path), "-inspect"],
+                                   capture_output=True, text=True, check=True, encoding="utf-8")
+        ledger = json.loads(inspected.stdout) or []
         if (result["NodeID"] != config["NodeID"] or result["PID"] in pids
-                or len(ledger) != config["TargetHeights"]):
+                or len(ledger) != result["Height"]):
             raise ValueError(f"Incomplete or invalid result for {path.name}")
         pids.add(result["PID"])
         headers = [entry["Block"]["Header"] for entry in ledger]
@@ -149,14 +165,15 @@ def verify_results(configs):
                  "send_error", "block", "unblock"):
         if counts[name]:
             print(f"  {name}: {counts[name]}")
-    print("Histories and roots agree. Go tests additionally verify execution and quorum signatures.")
+    print("On-disk honest histories and roots agree. Go tests additionally verify execution and quorum signatures.")
 
 
 def run_cluster(binary, directory, configs):
     processes = []
     try:
         with ExitStack() as files:
-            deadline = time.monotonic() + max(c[1]["RunForMS"] for c in configs) / 1000 + 20
+            duration = max(c[1]["RunForMS"] for c in configs)
+            deadline = time.monotonic() + duration / 1000 + 20 if duration else None
             for path, config, _ in configs:
                 node_id = config["NodeID"]
                 stdout = files.enter_context((directory / f"stdout-{node_id:02d}.txt").open("w"))
@@ -167,11 +184,11 @@ def run_cluster(binary, directory, configs):
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
                 processes.append(process)
-            for process in processes:
-                code = process.wait(timeout=max(0, deadline - time.monotonic()))
-                if code:
+            for process, (_, config, _) in zip(processes, configs):
+                code = process.wait(timeout=max(0, deadline - time.monotonic()) if deadline else None)
+                if code and not (config["Behavior"] == "crashed_proposer" and code == 86):
                     raise RuntimeError(f"Node PID {process.pid} failed; inspect stderr in {directory}.")
-            verify_results(configs)
+            verify_results(configs, binary)
     finally:
         stop_processes(processes)
 
@@ -187,10 +204,17 @@ def main():
     group.add_argument("--run-dir", type=Path, help="Fresh directory to initialize")
     group.add_argument("--config-dir", type=Path, help="Start existing, edited configs without regenerating")
     parser.add_argument("--prepare-only", action="store_true", help="Generate configs, then stop for editing/manual launch")
+    parser.add_argument("--submit", help="Submit this value to --node using its signing key")
+    parser.add_argument("--nonce", type=int, default=1)
+    parser.add_argument("--record", default="message")
+    parser.add_argument("--via", type=int, help="Submit through another live node")
+    parser.add_argument("--inspect", action="store_true", help="Read --node's LevelDB after it stops")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--node", type=int, help="Run only this node in the current terminal; requires --config-dir")
     actions.add_argument("--check-only", action="store_true", help="Check saved results without building or starting nodes; requires --config-dir")
     args = parser.parse_args()
+    if args.submit is not None and args.inspect:
+        parser.error("Choose --submit or --inspect")
     if (args.node is not None or args.check_only) and (not args.config_dir or args.prepare_only):
         parser.error("--node/--check-only require --config-dir and cannot be combined with --prepare-only")
     if args.config_dir:
@@ -202,7 +226,21 @@ def main():
     configs = load_configs(directory)
     print(f"Cluster directory: {directory}", flush=True)
     if args.check_only:
-        verify_results(configs)
+        verify_results(configs, binary)
+    elif args.submit is not None or args.inspect:
+        if args.node is None:
+            raise ValueError("--submit/--inspect require --config-dir and --node")
+        selected = [entry for entry in configs if entry[1]["NodeID"] == args.node]
+        if not selected:
+            raise ValueError("Unknown node")
+        command = [str(binary), "-config", str(selected[0][0])]
+        if args.inspect:
+            command.append("-inspect")
+        else:
+            command += ["-submit", args.submit, "-nonce", str(args.nonce), "-record", args.record]
+            if args.via is not None:
+                command += ["-via", str(args.via)]
+        subprocess.run(command, cwd=REPO, check=True)
     elif args.node is not None:
         selected = [entry for entry in configs if entry[1]["NodeID"] == args.node]
         if not selected:
@@ -210,7 +248,7 @@ def main():
         require_fresh_output(selected)
         if not binary.exists():
             binary = build_node(args.go)
-        run_one_node(binary, selected[0][0])
+        run_one_node(binary, selected[0][0], selected[0][1]["Behavior"] == "crashed_proposer")
     elif args.prepare_only:
         require_fresh_output(configs)
         print("Edit the JSON files, then run:")

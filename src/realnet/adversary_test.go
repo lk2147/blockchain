@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"blockchain-lab01/src/block"
 	cons "blockchain-lab01/src/consensus"
@@ -33,6 +34,8 @@ type faultyPeer struct {
 	branches map[string]types.Hash
 	voted    bool
 	replayed map[int]bool
+	workload [][]types.Transaction
+	begun    bool
 }
 
 func newFaultyPeer(p *process, role string) (localNode, error) {
@@ -41,12 +44,26 @@ func newFaultyPeer(p *process, role string) (localNode, error) {
 	default:
 		return nil, fmt.Errorf("unknown test role")
 	}
-	return &faultyPeer{p: p, role: role, ads: make(map[types.Hash]attackBlock), incoming: make(map[transfer]attackHeader), branches: make(map[string]types.Hash), replayed: make(map[int]bool)}, nil
+	raw, err := os.ReadFile(os.Getenv("LAB01_TEST_WORKLOAD"))
+	if err != nil {
+		return nil, err
+	}
+	var workload [][]types.Transaction
+	if err = json.Unmarshal(raw, &workload); err != nil {
+		return nil, err
+	}
+	return &faultyPeer{p: p, role: role, ads: make(map[types.Hash]attackBlock), incoming: make(map[transfer]attackHeader), branches: make(map[string]types.Hash), replayed: make(map[int]bool), workload: workload}, nil
+}
+func (a *faultyPeer) Submit(types.Transaction) error {
+	return network.Reject(fmt.Errorf("faulty test peer does not accept client input"))
 }
 func (a *faultyPeer) Ledger() []cons.Finalized       { return nil } // Faulty peers do not claim honest finality.
 func (a *faultyPeer) StateRoot() (types.Hash, error) { return (state.State{}).Root(a.p.cfg.ChainID) }
 func (a *faultyPeer) Start() error {
 	a.p.Record(network.Event{Node: a.p.cfg.NodeID, Peer: -1, Event: "adversary_start", Reason: a.role})
+	return nil // Begin the attack only after the real client transaction arrives.
+}
+func (a *faultyPeer) begin() error {
 	if a.role == "silent" || a.p.cfg.NodeID != 0 {
 		return nil
 	}
@@ -63,7 +80,7 @@ func (a *faultyPeer) Start() error {
 	return a.campaign()
 }
 func (a *faultyPeer) makeBlock(branch string, duplicate, badSignature bool) error {
-	tx := a.p.cfg.Workload[0][0]
+	tx := a.workload[0][0]
 	tx.Value = append([]byte(nil), tx.Value...)
 	if branch == "B" {
 		tx.Value = []byte("conflicting Byzantine value")
@@ -199,6 +216,20 @@ func (a *faultyPeer) Receive(packet network.Packet) error {
 		return nil
 	}
 	switch packet.Kind {
+	case network.Transaction:
+		if a.p.cfg.NodeID != 0 || a.begun || a.role == "silent" {
+			return nil
+		}
+		var tx types.Transaction
+		if err := json.Unmarshal(packet.Data, &tx); err != nil {
+			return err
+		}
+		if err := crypt.VerifyTransaction(a.p.cfg.ChainID, tx); err != nil {
+			return network.Reject(err)
+		}
+		a.workload[0] = []types.Transaction{tx}
+		a.begun = true
+		return a.begin()
 	case network.Request:
 		if b, ok := a.ads[packet.Ref]; ok {
 			return a.p.Send(packet.From, network.Message{Kind: network.Body, Ref: packet.Ref, Height: 1, Data: b.body})
@@ -245,7 +276,7 @@ func (a *faultyPeer) Receive(packet network.Packet) error {
 		if bh != h.Proposal.Block.Header.BodyHash {
 			return network.Reject(fmt.Errorf("adversary body mismatch"))
 		}
-		known, err := crypt.BodyHash(a.p.cfg.ChainID, types.BlockBody{Transactions: a.p.cfg.Workload[0]})
+		known, err := crypt.BodyHash(a.p.cfg.ChainID, types.BlockBody{Transactions: a.workload[0]})
 		if err != nil {
 			return err
 		}

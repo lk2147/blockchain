@@ -13,10 +13,11 @@ type Kind string
 const Broadcast = -1
 
 const (
-	Header  Kind = "header"
-	Request Kind = "body_request"
-	Body    Kind = "body"
-	Vote    Kind = "vote"
+	Header      Kind = "header"
+	Request     Kind = "body_request"
+	Body        Kind = "body"
+	Vote        Kind = "vote"
+	Transaction Kind = "tx"
 )
 
 var ErrQueueFull = errors.New("outbound queue full")

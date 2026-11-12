@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	crypt "blockchain-lab01/src/crypto"
-	"blockchain-lab01/src/types"
 )
 
 // Generate creates a fresh local development cluster. Key randomness is always
@@ -24,8 +23,6 @@ func Generate(dir string, count, basePort int, runMS uint64, faults Policy) erro
 		return err
 	} // Refuse to overwrite an existing cluster.
 	var peers []Peer
-	var privatePaths []string
-	var workload [][]types.Transaction
 	for i := 0; i < count; i++ {
 		pub, key, err := crypt.GenerateIdentity()
 		if err != nil {
@@ -35,22 +32,33 @@ func Generate(dir string, count, basePort int, runMS uint64, faults Policy) erro
 		if err = os.WriteFile(filepath.Join(dir, name), []byte(hex.EncodeToString(key)), 0600); err != nil {
 			return err
 		}
-		privatePaths = append(privatePaths, name)
 		peers = append(peers, Peer{Address: fmt.Sprintf("127.0.0.1:%d", basePort+i), PublicKey: hex.EncodeToString(pub[:]), GossipAddress: fmt.Sprintf("127.0.0.1:%d", basePort+count+i)})
-		if i < 2 {
-			tx, err := crypt.SignTransaction(types.Transaction{ChainID: "lab01-local", Sender: pub, TargetKey: hex.EncodeToString(pub[:]) + "/message", Value: []byte(fmt.Sprintf("hello from participant %d", i)), Nonce: 1}, key)
-			if err != nil {
-				return err
-			}
-			workload = append(workload, []types.Transaction{tx})
-		}
+	}
+	shared := struct {
+		ChainID string
+		F       int
+		Peers   []Peer
+	}{"lab01-local", (count - 1) / 3, peers}
+	b, err := json.MarshalIndent(shared, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(dir, "network.json"), b, 0600); err != nil {
+		return err
 	}
 	for i := 0; i < count; i++ {
 		policy := faults
 		policy.Seed += int64(i)
-		c := Config{ChainID: "lab01-local", NodeID: i, F: (count - 1) / 3, Peers: peers, PrivateKeyFile: privatePaths[i], OutputDir: fmt.Sprintf("node-%02d", i), BaseTimeoutMS: 1000, RetryMS: 400, RunForMS: runMS, TargetHeights: 2, SendGapMS: 1, QueueLimit: 2048, ReceiveLimit: 500, ReceiveWindowMS: 1000, BlockMS: 500, Faults: policy, Workload: workload}
-		if err := c.Validate(); err != nil {
-			return err
+		c := struct {
+			NodeID      int
+			NetworkFile string
+			Behavior    string
+			SendGapMS   uint64
+			RunForMS    uint64  `json:",omitempty"`
+			Faults      *Policy `json:",omitempty"`
+		}{NodeID: i, NetworkFile: "network.json", Behavior: "honest", SendGapMS: 1, RunForMS: runMS}
+		if faults != (Policy{}) && faults != (Policy{Seed: 1}) {
+			c.Faults = &policy
 		}
 		b, err := json.MarshalIndent(c, "", "  ")
 		if err != nil {

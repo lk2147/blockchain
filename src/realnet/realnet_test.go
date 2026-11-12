@@ -121,7 +121,7 @@ func TestRealSocketRejectsInvalidHeadersAndBodies(t *testing.T) {
 	if err := os.WriteFile(keyPath, []byte(hex.EncodeToString(keys[0])), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{ChainID: "wire-test", NodeID: 0, F: 3, Peers: peers, PrivateKeyFile: keyPath, OutputDir: filepath.Join(dir, "output"), BaseTimeoutMS: 1500, RetryMS: 400, RunForMS: 4000, TargetHeights: 1, SendGapMS: 1, QueueLimit: 2048, ReceiveLimit: 4, ReceiveWindowMS: 10000, BlockMS: 200}
+	cfg := Config{ChainID: "wire-test", NodeID: 0, F: 3, Peers: peers, PrivateKeyFile: keyPath, OutputDir: filepath.Join(dir, "output"), BaseTimeoutMS: 1500, RetryMS: 400, RunForMS: 4000, TargetHeights: 1, SendGapMS: 1, QueueLimit: 2048, ReceiveLimit: 4, ReceiveWindowMS: 10000, BlockMS: 200, Trace: true}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, cfg) }()

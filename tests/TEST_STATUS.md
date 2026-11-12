@@ -1,106 +1,118 @@
-# Current checks - GossipSub and bidirectional gRPC
+# Kiểm tra hiện tại: transaction mạng, mempool RAM, ledger LevelDB
 
-The transport revision uses actual libp2p GossipSub for signed broadcasts and
-persistent gRPC Exchange streams for directed traffic. This page records test
-execution, not a final submission report. Earlier 203-test results and the
-selected logs/evidence describe the previous unary transport.
+Đây là ghi nhận thực thi test, không phải báo cáo nộp bài. Các stage note, report,
+script đóng gói và snapshot log cũ đã bỏ vì mô tả kiến trúc không còn đúng.
 
-## Executed final full suites
+## Kết quả đã thực thi
 
-From the repository root, with the existing installed Python runtime:
-
-```text
-python tests/run_tests.py --go D:/tools/golang/bin/go.exe --output local-runs/transport-normal-final
-python tests/run_tests.py --go D:/tools/golang/bin/go.exe --race --output local-runs/transport-race-final
-```
-
-Both exited 0: all T1-T8, 205 passing tests/subtests, no missing scenarios and
-no failed tests. Both checked gofmt -l src (clean) and ran go vet ./... (exit 0).
-The race-enabled suite reported no races. The runner executes go test ./...
--count=1 -json, adding -race for the second command. Counts include parent tests
-and subtests, not 205 distinct end-to-end scenarios. TestProcessNodeEntry is
-skipped only in the parent and executed inside actual child processes.
-
-Each evidence directory contains summary.json, raw go-test.jsonl, go-vet.log,
-per-case configs, explicitly test-only keys, and independently produced node
-events/results. They remain under ignored local-runs because they include keys.
-
-## Scenario coverage
-
-All cases launch ten real processes with n=10, f=3 and quorum seven. Honest
-ledgers are re-executed and their signed finality certificates checked. All
-recorded finalizations are checked for conflicts, not just the final snapshots.
-
-| Case | Actual check and required outcome |
+| Lượt chạy | Kết quả |
 |---|---|
-| T1 | Normal agreement on two-block history and expected state |
-| T2 | Actual duplicated/reordered transmissions; no duplicate-created quorum, conflicting signing or finalization |
-| T3 | Every honest node rejects/logs bad proposal signatures and wrong-domain votes, then progresses |
-| T4 | Duplicate nonce batch rejected atomically; nine old-candidate replay sends verified; finalized ordered transactions applied once |
-| T5 | Complete initial loss for 1200ms; no protocol send/finalization before it ends; later agreement |
-| T6 | Separate silent and actually killed proposer cases; honest survivors time out and progress |
-| T7 | Three Byzantine processes sign/transmit both candidates in both phases; seven honest nodes agree on one block |
-| T8 | Two independent controlled runs preserve exact signed transaction order and expected state; actual drop/duplicate/reorder/replay sends required |
+| local-runs/mempool-disk-normal-clean | Full normal sau sửa retry: exit 0, 222 test/subtest, T1-T8 và sáu behavior qua, formatting và vet qua |
+| local-runs/mempool-disk-race-verified | Full race: exit 0, 222 test/subtest, không missing/failed case, không báo data race; formatting và vet qua |
+| local-runs/mempool-race-retry-fix | Ba case race từng lỗi đã chạy lại và qua trước lượt full race |
+| local-runs/mempool-manual | Production launcher: 10 process, node 0 crash, node 1 duplicate TX, client nộp hai TX thật qua node 9; tám honest node lưu cùng hai block/root trên disk |
 
-T1/T2/T8 additionally require each node to log membership, GossipSub connection,
-publication and reception, and gRPC stream opening, sending and reception.
-All integration cases retain actual hold-deadline/rate checks and matching
-accepted-header-before-body gates. T7 targets one height; other cases target two.
-T5's nonzero-delay coverage is provided by T2/T8; T5 itself stresses total loss.
+Kiểm tra chạy từng terminal tại local-runs/mempool-terminal-entry cũng qua:
+node honest rảnh không tự tạo transaction/vote; node crashed_proposer thoát mã 86
+và launcher nhận diện đúng hành vi đã cấu hình.
 
-New focused tests in hybrid_test.go passed in normal and race-enabled suites:
-
-- TestGossipRelaysWithoutDirectConnection: authenticated 0--1--2 propagation
-  across real sockets while 0 and 2 have no direct connection.
-- TestStreamBidirectionalReconnectAndMembership: both ends write protocol frames
-  on the shared session; closing/reconnecting preserves communication; mismatched
-  membership and invalid handshake signatures are rejected by verification.
-- The retained real socket rejection test now obtains the matching body_request
-  over the same bidirectional RPC used to send the header. It still verifies
-  invalid header/body rejection and temporary peer blocking/unblocking.
-
-Existing crypto/state/block/consensus tests retain reference encodings, known
-hashes/Merkle roots, ownership/nonces, locking/NIL and invalid certificate cases.
-
-## Failure investigated during this change
-
-The first full race run at local-runs/transport-race failed T2 because honest
-nodes finalized only one of the required two blocks within the run. Its raw
-failure evidence is retained. No data race was reported. Logs showed repeated
-old finality-certificate publications competing with next-height traffic under
-gossip replication and 100% duplication.
-
-The production retry policy now re-advertises old finalized headers every fourth
-retry tick while keeping current proposal/vote retries and initial decisions
-prompt. Requested bodies remain immediate. The focused race T2 rerun at
-local-runs/transport-race-t2-fixed passed, followed by both final full suites.
-The duplicate policy, two-block requirement, quorum, safety, hold and state
-assertions were not relaxed. Normal cancellation/deadline is treated as expected
-PubSub shutdown rather than falsely logged as a close failure.
-
-## Configuration and execution limits
-
-The Python preflight accepted generated ten-node configs and rejected reordered
-membership and missing GossipAddress endpoints. It also requires the config
-directory to cover the complete configured validator set. Nodes check the shared
-fingerprint in signed stream handshakes and log it at startup.
-
-The final production launcher command also exited 0:
+Lệnh thực thi full suite từ thư mục project:
 
 ```text
-python tests/run_local_cluster.py --go D:/tools/golang/bin/go.exe --faults --base-port 29750 --run-ms 15000 --run-dir local-runs/transport-cli-final
+python tests/run_tests.py --go D:/tools/golang/bin/go.exe --output local-runs/mempool-disk-normal-clean
+python tests/run_tests.py --go D:/tools/golang/bin/go.exe --race --output local-runs/mempool-disk-race-verified
 ```
 
-Ten distinct node processes each saved two matching blocks and root
-a586608a2496b4cf1190c712c3467279081d1b22eafa3d7494d6266fcafb8321.
-This fresh random-key experiment observed 18 drops, 32 duplicate, 23 reorder and
-23 replay plans. Counts vary with real scheduling; the Go integration verifier
-separately requires actual transmissions for its fault-coverage assertions.
+Runner chạy gofmt -l src, go test ./... -count=1 -json (thêm -race khi yêu cầu),
+kiểm tra T1-T8 không bị bỏ sót và chạy go vet ./.... Kết quả gồm summary.json,
+go-test.jsonl, go-vet.log và toàn bộ node config/event/LevelDB theo từng case.
+222 là số tên test/subtest qua, gồm cả parent/subtest, không phải 222 mạng riêng.
+TestLedgerWriterChild và TestProcessNodeEntry được skip ở parent, nhưng thực sự
+chạy trong child process của các test tương ứng.
 
-Fault controls and send limits apply before authored gossip publications and
-directed stream writes. Libp2p control/automatic relay traffic is outside those
-artificial controls. This is not full kernel-packet conditioning. Connections
-are loopback-only; process restart recovery, public deployment, a live Python
-solver API and arbitrary configurable Byzantine strategies are not claimed.
-See REAL_NETWORK.md for code paths and current usage. Final report/ZIP work is
-deferred by the student until coding/testing is accepted.
+## T1-T8: điều kiện, fault, kết quả và invariant
+
+Mỗi case dùng 10 process Go, n=10/f=3/quorum=7, key fixture public TEST-ONLY.
+Transaction hợp lệ được client nộp qua RPC; honest peer nhận qua GossipSub và
+mempool. Không preload transaction trong config. T7 chạy một height; case khác
+chạy hai. Test đọc ledger từ LevelDB sau khi process đóng, thực thi lại từng
+block, kiểm tra parent/body/root và certificate có >=7 signer hợp lệ khác nhau.
+
+| ID | Điều kiện và input/fault | Kết quả quan sát qua | Invariant |
+|---|---|---|---|
+| T1 | Mạng honest, nộp nonce 1 rồi 2 | 10 node lưu cùng history/root; mempool_accept ở peer | Agreement và execution |
+| T2 | 100% duplicate, hold 2-8ms và reorder định kỳ | Actual send của bản sao/reorder, duplicate vote bị từ chối, cùng hai block | Không double-count/sign/finalize |
+| T3 | Proposer phát proposal sai chữ ký và vote sai domain | Cả chín honest peer ghi hai lý do reject và tiến ở round sau | Authentication không bị bypass |
+| T4 | Proposer tạo body trùng nonce rồi replay candidate cũ | Reject nonce/height, chín replay send được kiểm tra; final TX đúng một lần | Atomic execution và replay protection |
+| T5 | Drop mọi protocol publication/write trong 1200ms rồi ngừng fault | Không send/finalize trước hạn; sau đó lưu hai block đồng nhất | Safety trước ổn định, progress sau đó |
+| T6 | Silent proposer và case riêng kill process proposer | Timeout/đổi round; chín survivor lưu hai block | Liveness với proposer đúng về sau |
+| T7 | Ba process ký/phát A và B trong cả hai phase | Chữ ký xung đột thực sự được truyền; bảy honest node lưu cùng block | Safety tại giới hạn f |
+| T8 | Hai run độc lập, cùng key/input/fault seed | Cùng signed TX order và expected root; cả hai có actual fault transmissions | Deterministic effects, không đòi timestamps giống nhau |
+
+T5 chủ yếu kiểm tra loss hoàn toàn; delay khác zero được kiểm tra trong T2/T8.
+Faulty process tự tạo/nhận message bằng key của chính nó; verifier không gán
+ledger cho honest node. T7 chỉ bắt đầu sau khi TX client đến qua mạng.
+
+## Mempool và disk
+
+| Test | Initial/input | Quan sát và invariant |
+|---|---|---|
+| TestPoolOrderingReplayAndIsolation | Empty state; nhận nonce 3,1,2, duplicate; sửa buffer caller | Chờ nonce còn thiếu; chọn 1,2; giữ trước commit; prune sau commit; nonce 1 replay bị reject; nonce 3 còn chờ |
+| TestPoolRejectsBadAndBoundedInputs | Chữ ký/chain/owner/nonce sai, count/byte bounds | Không admission hoặc selection vượt giới hạn; owner/foreign-chain case có chữ ký tương ứng hợp lệ |
+| TestDurableSequentialLedger | Append height 1, duplicate/gap, close/reopen và foreign chain | Giữ nguyên body/height trên disk, không overwrite/gap, không mở sai chain |
+| TestLedgerSurvivesProcessKill | Child Append Sync=true rồi parent kill mà không Close | Reopen LevelDB và đọc đúng body đã ghi; không dựa vào result.json/shutdown |
+| TestDiskFailureCannotCommit | Inject lỗi disk khi đủ PRECOMMIT quorum | Lỗi được trả ra; height/state/ledger không commit và không emit Finalized |
+
+Production node luôn truyền callback LevelDB vào consensus. In-memory engine
+ledger chỉ phục vụ unit tests không khởi chạy node thật. Body đã final không
+được giữ trong cache advertisement; matching body request đọc lại từ LevelDB.
+
+## Behavior cấu hình thực tế
+
+TestConfiguredBehaviors chạy sáu case độc lập với Behavior của node 0:
+invalid_signature, wrong_domain, duplicate_transaction, replay_transaction,
+silent_proposer, crashed_proposer. Mỗi case nộp TX qua mạng và yêu cầu chín
+honest node có đúng hai block với expected execution/root/certificate. Bad/silent/
+crashed proposer phải chuyển khỏi round 0; duplicate phải có reject evidence;
+replay phải thực sự được kích hoạt. Không giảm quorum hoặc bỏ guard để tiến.
+
+Gossip relay 0--1--2 không có link 0--2, bi-stream hai chiều, reconnect, membership,
+header/body mismatch và temporary peer blocking vẫn được kiểm tra bằng socket.
+Các unit crypto/reference bytes, state ownership/Merkle và consensus locks/NIL
+tiếp tục nằm trong suite. Duplicate fast path chỉ áp dụng bản sao chính xác của
+dữ liệu đã xác minh; nội dung/chữ ký đổi vẫn phải xác minh lại.
+
+## Lỗi đã phát hiện và sửa
+
+Lượt race đầu tại local-runs/mempool-disk-race-final qua T1-T8 nhưng ba behavior
+chữ ký sai/domain sai/silent không final kịp deadline nộp nonce 2. Giữ lại raw
+failure evidence. Log cho thấy retry vote round cũ và xác minh crypto lặp làm
+chậm proposal/body mới dưới race instrumentation. Đã sửa để retry vote ở round
+hiện tại (proof cũ vẫn nằm trong reproposal), tái sử dụng envelope do topic
+validator đã xác thực, và reject exact duplicates bằng dữ liệu/hash đã xác minh.
+Không đổi deadline, số block, fault policy, quorum, signature scope hay assertion
+chống conflict. Ba focused race case sau đó qua và full race sau sửa qua.
+
+Lượt normal tại local-runs/mempool-disk-normal-verified gặp một startup timeout
+trong configured-invalid_signature, trước khi đủ mười process và trước consensus.
+Chưa xác định nguyên nhân; không coi lượt đó là thành công. Case chạy riêng tại
+local-runs/mempool-normal-startup-recheck qua với cùng deadline/assertion; lượt
+full tiếp theo tại local-runs/mempool-disk-normal-clean qua đủ 222 test/subtest.
+Giữ lại cả evidence lỗi để không che giấu hiện tượng khởi tạo không ổn định.
+
+Sau lượt full, CLI được sửa để nhận diện cờ -submit ngay cả khi giá trị là chuỗi
+rỗng. Thay đổi này chỉ chọn nhánh client; kiểm tra build/static và gọi CLI riêng
+được thực hiện bổ sung, không thay đổi consensus hoặc các kết quả full ở trên.
+Build, go test ./src/cmd/node (không có test riêng), gofmt -l src và go vet ./...
+đều hoàn tất thành công. Gọi -submit= đến node đã dừng trả RPC Unavailable như
+mong đợi, xác nhận đã vào nhánh client thay vì khởi chạy lại validator; đây không
+phải kiểm tra admission thành công của một transaction rỗng.
+
+## Giới hạn được công khai
+
+Mempool và application state hiện tại ở RAM; finalized block/certificate ở disk.
+Đọc lại block sau kill đã kiểm tra. Safe validator restart chưa có: phải persist
+thêm vote/lock signing state trước khi cho phép ký sau khôi phục. Output cũ bị
+từ chối và không bị overwrite. Full public-network deployment không được tuyên bố.
+Fault controls giới hạn authored protocol traffic, không toàn bộ libp2p relay/
+heartbeat hay kernel packet. Không có benchmark hiệu năng 4 MiB được bịa ra.

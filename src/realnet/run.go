@@ -11,12 +11,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	cons "blockchain-lab01/src/consensus"
 	crypt "blockchain-lab01/src/crypto"
+	"blockchain-lab01/src/ledger"
 	"blockchain-lab01/src/network"
 	"blockchain-lab01/src/node"
 	pb "blockchain-lab01/src/proto"
@@ -27,7 +28,7 @@ import (
 type Result struct {
 	NodeID, PID int
 	StateRoot   string
-	Ledger      []cons.Finalized
+	Height      uint64
 }
 type logWriter struct {
 	mu    sync.Mutex
@@ -35,21 +36,69 @@ type logWriter struct {
 	start time.Time
 	seq   uint64
 	err   error
+	trace bool
+	last  map[string]time.Time
 }
 
 func (l *logWriter) record(e network.Event) {
+	if !l.trace && !importantEvent(e.Event) {
+		if (e.Event != "reject" && e.Event != "consensus_reject") || (!strings.Contains(e.Reason, "signature") && !strings.Contains(e.Reason, "domain") && !strings.Contains(e.Reason, "conflicting vote")) {
+			return
+		}
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.err != nil {
 		return
 	}
+	if !l.trace && (e.Event == "transaction_reject" || strings.HasPrefix(e.Event, "fault_") || e.Event == "queue_full" || e.Event == "reject" || e.Event == "consensus_reject") {
+		if l.last == nil {
+			l.last = make(map[string]time.Time)
+		}
+		key := e.Event + string(e.Type)
+		if e.Event == "transaction_reject" || e.Event == "reject" || e.Event == "consensus_reject" {
+			key += e.Reason
+		}
+		now := time.Now()
+		if now.Sub(l.last[key]) < time.Second {
+			return
+		}
+		l.last[key] = now
+	}
 	l.seq++
 	e.Seq = l.seq
 	e.At = uint64(time.Since(l.start) / time.Millisecond)
-	l.err = json.NewEncoder(l.file).Encode(struct {
-		WallTime string
-		network.Event
-	}{time.Now().UTC().Format(time.RFC3339Nano), e})
+	if l.trace {
+		l.err = json.NewEncoder(l.file).Encode(struct {
+			WallTime string
+			network.Event
+		}{time.Now().UTC().Format(time.RFC3339Nano), e})
+	} else {
+		ref := ""
+		if e.Ref != (types.Hash{}) {
+			ref = hex.EncodeToString(e.Ref[:])
+		}
+		l.err = json.NewEncoder(l.file).Encode(struct {
+			Time   string
+			Node   int
+			Event  string
+			Height uint64 `json:",omitempty"`
+			Round  uint64 `json:",omitempty"`
+			Hash   string `json:",omitempty"`
+			Root   string `json:",omitempty"`
+			Detail string `json:",omitempty"`
+		}{time.Now().Format("15:04:05.000"), e.Node, e.Event, e.Height, e.Round, ref, e.StateRoot, e.Reason})
+		fmt.Printf("%s node=%d %-22s height=%d round=%d %s %s\n", time.Now().Format("15:04:05"), e.Node, e.Event, e.Height, e.Round, e.Reason, e.StateRoot)
+	}
+}
+func importantEvent(e string) bool {
+	switch e {
+	case "node_stop":
+		return true
+	case "listen", "membership", "mempool_accept", "transaction_reject", "transaction_replay", "consensus_proposal", "consensus_timeout", "consensus_lock", "consensus_vote_signed", "state_commit", "proposer_crash", "block", "unblock", "reject_handshake", "ledger_error", "fault_drop", "fault_duplicate", "fault_reorder", "fault_replay", "queue_full", "behavior", "behavior_message":
+		return true
+	}
+	return false
 }
 func (l *logWriter) failure() error { l.mu.Lock(); defer l.mu.Unlock(); return l.err }
 
@@ -78,6 +127,7 @@ type transfer struct {
 type received struct {
 	frame *pb.Envelope
 	done  chan error
+	tx    *types.Transaction
 }
 type arrival struct {
 	window uint64
@@ -89,7 +139,7 @@ type arrival struct {
 type localNode interface {
 	Start() error
 	Receive(network.Packet) error
-	Ledger() []cons.Finalized
+	Submit(types.Transaction) error
 	StateRoot() (types.Hash, error)
 }
 type process struct {
@@ -116,6 +166,7 @@ type process struct {
 	sessionMu                 sync.Mutex
 	sessions                  map[int]*peerSession
 	streamWG                  sync.WaitGroup
+	store                     *ledger.Store
 }
 
 func (p *process) now() uint64            { return uint64(time.Since(p.log.start) / time.Millisecond) }
@@ -132,7 +183,7 @@ func (p *process) Send(peer int, m network.Message) error {
 	if peer < network.Broadcast || peer >= len(p.ids) || peer == p.cfg.NodeID {
 		return fmt.Errorf("invalid real peer")
 	}
-	if peer == network.Broadcast && m.Kind != network.Header && m.Kind != network.Vote {
+	if peer == network.Broadcast && m.Kind != network.Header && m.Kind != network.Vote && m.Kind != network.Transaction {
 		return fmt.Errorf("only headers and votes use GossipSub broadcast")
 	}
 	k := transfer{peer, m.Ref}
@@ -214,7 +265,13 @@ func (p *process) acceptFrame(ctx context.Context, e *pb.Envelope) error {
 		p.log.record(network.Event{Node: p.cfg.NodeID, Peer: int(e.GetSender()), Event: "reject_transport", Reason: err.Error()})
 		return err
 	}
-	r := received{e, make(chan error, 1)}
+	return p.enqueueVerified(ctx, e)
+}
+
+// Called only after transport authentication, either by acceptFrame or the
+// GossipSub topic validator. Both paths still execute all protocol validation.
+func (p *process) enqueueVerified(ctx context.Context, e *pb.Envelope) error {
+	r := received{frame: e, done: make(chan error, 1)}
 	select {
 	case p.in <- r:
 	case <-ctx.Done():
@@ -348,7 +405,7 @@ func (p *process) save() error {
 	if err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(Result{NodeID: p.cfg.NodeID, PID: os.Getpid(), StateRoot: hex.EncodeToString(root[:]), Ledger: p.runtime.Ledger()}, "", "  ")
+	b, err := json.MarshalIndent(Result{NodeID: p.cfg.NodeID, PID: os.Getpid(), StateRoot: hex.EncodeToString(root[:]), Height: p.store.Height()}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -363,11 +420,13 @@ func (p *process) save() error {
 // decisions after this node finishes. Existing outputs cannot be resumed safely.
 func Run(parent context.Context, c Config) (resultErr error) {
 	return runWithNode(parent, c, func(p *process) (localNode, error) {
-		return node.New(node.Config{ID: c.NodeID, ChainID: c.ChainID, F: c.F, Validators: p.ids, PrivateKey: p.key, BaseTimeout: c.BaseTimeoutMS, RetryInterval: c.RetryMS, TargetHeights: c.TargetHeights, Workload: c.Workload}, p)
+		c = p.cfg
+		return node.New(node.Config{ID: c.NodeID, ChainID: c.ChainID, F: c.F, Validators: p.ids, PrivateKey: p.key, BaseTimeout: c.BaseTimeoutMS, RetryInterval: c.RetryMS, TargetHeights: c.TargetHeights, Store: p.store, Behavior: c.Behavior, MempoolLimit: c.MempoolLimit, MempoolBytes: c.MempoolBytes, MaxTxBytes: c.MaxTxBytes, MaxBlockTXs: c.MaxBlockTXs, MaxBlockBytes: c.MaxBlockBytes}, p)
 	})
 }
 
 func runWithNode(parent context.Context, c Config, makeNode func(*process) (localNode, error)) (resultErr error) {
+	c.Defaults()
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -405,9 +464,30 @@ func runWithNode(parent context.Context, c Config, makeNode func(*process) (loca
 			resultErr = err
 		}
 	}()
-	ctx, cancel := context.WithTimeout(parent, time.Duration(c.RunForMS)*time.Millisecond)
+	ctx, cancel := context.WithCancel(parent)
+	if c.RunForMS > 0 {
+		cancel()
+		ctx, cancel = context.WithTimeout(parent, time.Duration(c.RunForMS)*time.Millisecond)
+	}
 	defer cancel()
-	p := &process{cfg: c, ctx: ctx, key: key, ids: ids, log: &logWriter{file: file, start: time.Now()}, in: make(chan received, c.QueueLimit), jobs: make(chan *pb.Envelope, c.QueueLimit), faults: newFaultLayer(c.Faults), seen: make(map[transfer]bool), accepted: make(map[transfer]bool), requested: make(map[transfer]bool), blocked: make(map[int]uint64), arrivals: make(map[int]arrival), sessions: make(map[int]*peerSession)}
+	store, err := ledger.Open(filepath.Join(c.OutputDir, "ledger.db"), c.ChainID, false)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := store.Close(); err != nil && resultErr == nil {
+			resultErr = err
+		}
+	}()
+	if store.Height() != 0 {
+		return fmt.Errorf("ledger exists on disk; validator signing-state recovery is not implemented; inspect it or use a fresh run directory")
+	}
+	p := &process{cfg: c, ctx: ctx, key: key, ids: ids, log: &logWriter{file: file, start: time.Now(), trace: c.Trace}, in: make(chan received, c.QueueLimit), jobs: make(chan *pb.Envelope, c.QueueLimit), faults: newFaultLayer(c.Faults), seen: make(map[transfer]bool), accepted: make(map[transfer]bool), requested: make(map[transfer]bool), blocked: make(map[int]uint64), arrivals: make(map[int]arrival), sessions: make(map[int]*peerSession), store: store}
+	defer func() {
+		if resultErr != nil {
+			p.Record(network.Event{Node: c.NodeID, Peer: -1, Event: "node_stop", Reason: resultErr.Error()})
+		}
+	}()
 	p.runtime, err = makeNode(p)
 	if err != nil {
 		return err
@@ -448,6 +528,7 @@ func runWithNode(parent context.Context, c Config, makeNode func(*process) (loca
 	p.streamWG.Add(1)
 	go func() { defer p.streamWG.Done(); p.gossip.connect() }()
 	p.Record(network.Event{Node: c.NodeID, Peer: -1, Event: "listen", Reason: fmt.Sprintf("pid=%d address=%s", os.Getpid(), listener.Addr())})
+	p.Record(network.Event{Node: c.NodeID, Peer: -1, Event: "behavior", Reason: c.Behavior})
 	start := func() error {
 		p.started = true
 		p.Record(network.Event{Node: c.NodeID, Peer: -1, Event: "experiment_start"})
@@ -502,6 +583,22 @@ func runWithNode(parent context.Context, c Config, makeNode func(*process) (loca
 			return fmt.Errorf("gRPC server unexpectedly stopped")
 		case r := <-p.in:
 			timer.Stop()
+			if r.tx != nil {
+				if !p.started {
+					err = network.Reject(fmt.Errorf("node awaiting experiment start"))
+				} else {
+					err = p.runtime.Submit(*r.tx)
+				}
+				if err != nil {
+					var rejection *network.Rejection
+					if !errors.As(err, &rejection) {
+						r.done <- err
+						return err
+					}
+				}
+				r.done <- err
+				continue
+			}
 			err = p.receive(r.frame)
 			if err != nil {
 				p.frameEvent(r.frame, "reject", err.Error())

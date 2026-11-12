@@ -109,7 +109,11 @@ func (p *process) newGossip() (*gossipNetwork, error) {
 		if proto.Unmarshal(msg.Data, &e) != nil || e.Recipient != ^uint32(0) || int(e.Sender) >= len(g.peers) {
 			return false
 		}
-		return msg.GetFrom() == g.peers[e.Sender].ID && VerifyEnvelope(p.cfg.ChainID, p.cfg.NodeID, p.ids, &e) == nil
+		if msg.GetFrom() != g.peers[e.Sender].ID || VerifyEnvelope(p.cfg.ChainID, p.cfg.NodeID, p.ids, &e) != nil {
+			return false
+		}
+		msg.ValidatorData = &e
+		return true
 	}); err != nil {
 		return cleanup(err)
 	}
@@ -137,12 +141,12 @@ func (g *gossipNetwork) read() {
 		if msg.GetFrom() == g.host.ID() {
 			continue
 		} // The engine already processes its own output.
-		var e pb.Envelope
-		if err := proto.Unmarshal(msg.Data, &e); err != nil {
+		e, ok := msg.ValidatorData.(*pb.Envelope)
+		if !ok {
 			continue
-		} // Validator already rejects malformed frames.
+		} // Only topic-authenticated messages reach the owner loop.
 		g.p.Record(network.Event{Node: g.p.cfg.NodeID, Peer: int(e.Sender), Event: "gossip_receive", Type: network.Kind(e.Kind), Height: e.Height, Round: e.Round, Packet: e.Sequence, Reason: "via=" + msg.ReceivedFrom.String()})
-		if err := g.p.acceptFrame(g.p.ctx, &e); err != nil && g.p.ctx.Err() == nil {
+		if err := g.p.enqueueVerified(g.p.ctx, e); err != nil && g.p.ctx.Err() == nil {
 			g.p.Record(network.Event{Node: g.p.cfg.NodeID, Peer: int(e.Sender), Event: "gossip_reject", Reason: err.Error()})
 		}
 	}

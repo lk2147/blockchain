@@ -17,6 +17,7 @@ import (
 var (
 	ErrDuplicate    = errors.New("duplicate vote")
 	ErrEquivocation = errors.New("conflicting vote")
+	ErrPersistence  = errors.New("ledger persistence failed")
 )
 
 type Step uint8
@@ -69,7 +70,8 @@ type Config struct {
 	Validators  []types.ValidatorID // Fixed order determines round-robin selection.
 	F           int
 	PrivateKey  ed25519.PrivateKey
-	BaseTimeout uint64 // Logical ticks; increases by round, saturating on overflow.
+	BaseTimeout uint64                // Logical ticks; increases by round, saturating on overflow.
+	Persist     func(Finalized) error // Production synchronously writes disk before committing.
 }
 type voteKey struct {
 	round     uint64
@@ -102,6 +104,7 @@ type Engine struct {
 	parent        types.Hash
 	committed     state.State
 	ledger        []Finalized
+	persist       func(Finalized) error
 	equivocations []Equivocation
 	votes         map[voteKey]types.Vote
 	sent          map[voteKey]types.Vote
@@ -150,6 +153,7 @@ func New(c Config) (*Engine, error) {
 	}
 	e := &Engine{chain: c.ChainID, validators: append([]types.ValidatorID(nil), c.Validators...), members: members, id: id, key: key, quorum: 2*c.F + 1, faults: c.F, base: c.BaseTimeout, height: 1}
 	e.resetHeight()
+	e.persist = c.Persist
 	e.enter(Propose)
 	return e, nil
 }
@@ -409,10 +413,15 @@ func (e *Engine) ReceiveVote(v types.Vote) error {
 	if !e.members[v.Validator] {
 		return e.reject(fmt.Errorf("unknown validator"))
 	}
+	k := voteKey{v.Round, v.Phase, v.Validator}
+	// An exact copy includes the already verified signature and all signed
+	// fields. Reject it without repeating expensive verification under a flood.
+	if prior, ok := e.votes[k]; ok && prior == v {
+		return e.reject(ErrDuplicate)
+	}
 	if err := crypt.VerifyVote(e.chain, v); err != nil {
 		return e.reject(err)
 	}
-	k := voteKey{v.Round, v.Phase, v.Validator}
 	if prior, ok := e.votes[k]; ok {
 		if prior.IsNil == v.IsNil && prior.BlockHash == v.BlockHash {
 			return e.reject(ErrDuplicate)
@@ -529,7 +538,13 @@ func (e *Engine) finalize(c candidate, round uint64, hash types.Hash, proof []ty
 		return e.reject(fmt.Errorf("height exhausted"))
 	}
 	f := Finalized{Block: cloneBlock(c.block), OriginRound: c.origin, Round: round, Proof: append([]types.Vote(nil), proof...)}
-	e.ledger = append(e.ledger, f)
+	if e.persist != nil {
+		if err := e.persist(f); err != nil {
+			return fmt.Errorf("%w: %v", ErrPersistence, err)
+		}
+	} else {
+		e.ledger = append(e.ledger, f)
+	}
 	e.out.Finalized = append(e.out.Finalized, Finalized{Block: cloneBlock(c.block), OriginRound: c.origin, Round: round, Proof: append([]types.Vote(nil), proof...)})
 	e.committed = c.post
 	e.parent = hash

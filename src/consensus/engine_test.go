@@ -21,6 +21,41 @@ type cluster struct {
 	ids   []types.ValidatorID
 }
 
+func TestDiskFailureCannotCommit(t *testing.T) {
+	c := setup(t, 4)
+	writes := 0
+	e, err := cons.New(cons.Config{ChainID: "lab", Validators: c.ids, F: 1, PrivateKey: c.keys[0], BaseTimeout: 10, Persist: func(cons.Finalized) error { writes++; return errors.New("disk full") }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := e.State().Root("lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := e.MakeProposal(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := blockHash(t, p)
+	feed(t, e, signedVote(t, c, 1, 0, types.Prevote, hash))
+	feed(t, e, signedVote(t, c, 2, 0, types.Prevote, hash))
+	feed(t, e, signedVote(t, c, 1, 0, types.Precommit, hash))
+	err = e.ReceiveVote(signedVote(t, c, 2, 0, types.Precommit, hash))
+	if !errors.Is(err, cons.ErrPersistence) || writes != 1 {
+		t.Fatalf("disk failure not propagated: %v writes=%d", err, writes)
+	}
+	after, err := e.State().Root("lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after || e.Status().Height != 1 || len(e.Ledger()) != 0 {
+		t.Fatal("committed despite failed durable write")
+	}
+	if len(e.Drain().Finalized) != 0 {
+		t.Fatal("announced a decision before durable storage")
+	}
+}
+
 func setup(t *testing.T, n int) cluster {
 	t.Helper()
 	var c cluster

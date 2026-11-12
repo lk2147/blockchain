@@ -91,7 +91,7 @@ def main():
     if vet.returncode:
         raise RuntimeError(f"Static checks failed: {vet.stderr}")
     print(f"All T1-T8 passed; {len(passed)} passing tests/subtests; static checks passed.", flush=True)
-    print("The parent-side process-entry helper is executed inside actual child processes.")
+    print("Parent-side process-entry helpers run inside actual node/durability child processes.")
 
 
 if __name__ == "__main__":
