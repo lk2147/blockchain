@@ -11,6 +11,9 @@ script đóng gói và snapshot log cũ đã bỏ vì mô tả kiến trúc khô
 | local-runs/mempool-disk-race-verified | Full race: exit 0, 222 test/subtest, không missing/failed case, không báo data race; formatting và vet qua |
 | local-runs/mempool-race-retry-fix | Ba case race từng lỗi đã chạy lại và qua trước lượt full race |
 | local-runs/mempool-manual | Production launcher: 10 process, node 0 crash, node 1 duplicate TX, client nộp hai TX thật qua node 9; tám honest node lưu cùng hai block/root trên disk |
+| local-runs/bulk-smoke-final-20261114 | Bulk client tạo key ngoài validator set, gửi 10/10 TX trong 119ms; cả 10 node final cùng 2 block/root, ledger có đủ 10 TX từ đúng một external sender |
+| local-runs/admin-live-smoke-20261114 | HTTP live của node 9 đọc status height 5 và ledger range 2 block khi cluster 10 process đang chạy; sau khi dừng, 10 node cùng 5 block/root |
+| local-runs/admin-mempool-final-20261114 | Chạy riêng node 9 không đủ quorum, gửi 10 TX; live status báo MempoolSize=10, `/mempool` trả đủ nonce 1..10 và `/ledger` vẫn height 0 |
 
 Kiểm tra chạy từng terminal tại local-runs/mempool-terminal-entry cũng qua:
 node honest rảnh không tự tạo transaction/vote; node crashed_proposer thoát mã 86

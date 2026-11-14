@@ -72,6 +72,7 @@ def load_configs(directory):
                 shared = path.parent / shared
             config.update(json.loads(shared.read_text(encoding="utf-8")))
         config.setdefault("Behavior", "honest")
+        config.setdefault("AdminAddress", "127.0.0.1:0")
         config.setdefault("OutputDir", f"node-{node_id:02d}")
         config.setdefault("RunForMS", 0)
         config.setdefault("TargetHeights", 0)
@@ -91,6 +92,9 @@ def load_configs(directory):
         configs.append((path, config, output))
     if sum(c[1]["Behavior"] != "honest" for c in configs) > configs[0][1]["F"]:
         raise ValueError("Configured dishonest node count exceeds f; safety assumptions would not hold.")
+    fixed_admin = [c[1]["AdminAddress"] for c in configs if not c[1]["AdminAddress"].endswith(":0")]
+    if len(fixed_admin) != len(set(fixed_admin)):
+        raise ValueError("AdminAddress must be distinct for every node.")
     return configs
 
 

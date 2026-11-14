@@ -13,7 +13,7 @@ import (
 // Generate creates a fresh local development cluster. Key randomness is always
 // crypto/rand through GenerateIdentity, independently of Faults.Seed.
 func Generate(dir string, count, basePort int, runMS uint64, faults Policy) error {
-	if count < 8 || (count-1)%3 != 0 || basePort < 1024 || basePort+2*count-1 > 65535 {
+	if count < 8 || (count-1)%3 != 0 || basePort < 1024 || basePort+3*count-1 > 65535 {
 		return fmt.Errorf("invalid cluster size or ports")
 	}
 	if err := faults.Validate(); err != nil {
@@ -50,13 +50,14 @@ func Generate(dir string, count, basePort int, runMS uint64, faults Policy) erro
 		policy := faults
 		policy.Seed += int64(i)
 		c := struct {
-			NodeID      int
-			NetworkFile string
-			Behavior    string
-			SendGapMS   uint64
-			RunForMS    uint64  `json:",omitempty"`
-			Faults      *Policy `json:",omitempty"`
-		}{NodeID: i, NetworkFile: "network.json", Behavior: "honest", SendGapMS: 1, RunForMS: runMS}
+			NodeID       int
+			NetworkFile  string
+			Behavior     string
+			AdminAddress string
+			SendGapMS    uint64
+			RunForMS     uint64  `json:",omitempty"`
+			Faults       *Policy `json:",omitempty"`
+		}{NodeID: i, NetworkFile: "network.json", Behavior: "honest", AdminAddress: fmt.Sprintf("127.0.0.1:%d", basePort+2*count+i), SendGapMS: 1, RunForMS: runMS}
 		if faults != (Policy{}) && faults != (Policy{Seed: 1}) {
 			c.Faults = &policy
 		}

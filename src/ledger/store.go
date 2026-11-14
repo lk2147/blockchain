@@ -59,7 +59,11 @@ func Open(path, chain string, readOnly bool) (*Store, error) {
 	}
 	return s, nil
 }
-func (s *Store) Close() error   { return s.db.Close() }
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.db.Close()
+}
 func (s *Store) Height() uint64 { s.mu.Lock(); defer s.mu.Unlock(); return s.height }
 func (s *Store) Append(f consensus.Finalized) error {
 	s.mu.Lock()
@@ -85,6 +89,8 @@ func (s *Store) Append(f consensus.Finalized) error {
 	return nil
 }
 func (s *Store) Get(height uint64) (consensus.Finalized, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var f consensus.Finalized
 	b, err := s.db.Get(blockKey(height), nil)
 	if err != nil {
@@ -96,6 +102,8 @@ func (s *Store) Get(height uint64) (consensus.Finalized, error) {
 
 // ReadAll is an explicit inspection/export operation, not a retained RAM ledger.
 func (s *Store) ReadAll() ([]consensus.Finalized, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var all []consensus.Finalized
 	it := s.db.NewIterator(util.BytesPrefix([]byte("block/")), nil)
 	defer it.Release()

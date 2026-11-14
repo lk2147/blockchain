@@ -30,6 +30,7 @@ type Config struct {
 	ReceiveWindowMS, BlockMS                                           uint64
 	Faults                                                             Policy
 	NetworkFile                                                        string `json:",omitempty"`
+	AdminAddress                                                       string `json:",omitempty"`
 	Behavior                                                           string `json:",omitempty"`
 	Trace                                                              bool   `json:",omitempty"`
 	MempoolLimit, MempoolBytes, MaxTxBytes, MaxBlockTXs, MaxBlockBytes int
@@ -75,6 +76,9 @@ func LoadConfig(path string) (Config, error) {
 	return c, c.Validate()
 }
 func (c *Config) Defaults() {
+	if c.AdminAddress == "" {
+		c.AdminAddress = "127.0.0.1:0"
+	}
 	if c.Behavior == "" {
 		c.Behavior = "honest"
 	}
@@ -162,6 +166,10 @@ func (c Config) Validate() error {
 			return fmt.Errorf("invalid/duplicate peer identity or address")
 		}
 		seenKey[string(key)] = true
+	}
+	host, port, err := net.SplitHostPort(c.AdminAddress)
+	if err != nil || port == "" || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() || (port != "0" && seenAddr[c.AdminAddress]) {
+		return fmt.Errorf("admin address must be a distinct loopback endpoint")
 	}
 	return c.Faults.Validate()
 }

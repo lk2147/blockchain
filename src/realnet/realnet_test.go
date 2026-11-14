@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,6 +103,102 @@ func TestFaultPolicyPreservesSignedReplays(t *testing.T) {
 	f = newFaultLayer(Policy{DropBPS: 10000})
 	if plan, drop := f.plan(0, e); !drop || len(plan) != 0 {
 		t.Fatal("drop did not discard transmission")
+	}
+}
+
+func TestLiveAdminInspection(t *testing.T) {
+	dir := t.TempDir()
+	addresses := reserveAddresses(t, 20)
+	var peers []Peer
+	var keys []ed25519.PrivateKey
+	for i := 0; i < 10; i++ {
+		key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{byte(i + 1)}, 32))
+		keys = append(keys, key)
+		peers = append(peers, Peer{Address: addresses[i], PublicKey: hex.EncodeToString(key[32:]), GossipAddress: addresses[10+i]})
+	}
+	keyPath := filepath.Join(dir, "key")
+	if err := os.WriteFile(keyPath, []byte(hex.EncodeToString(keys[0])), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{ChainID: "admin-test", NodeID: 0, F: 3, Peers: peers, PrivateKeyFile: keyPath, OutputDir: filepath.Join(dir, "node"), AdminAddress: "127.0.0.1:0", BaseTimeoutMS: 1500, RetryMS: 400, RunForMS: 3000, TargetHeights: 1, SendGapMS: 1, QueueLimit: 2048, ReceiveLimit: 1000, ReceiveWindowMS: 1000, BlockMS: 200}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cfg) }()
+	defer cancel()
+
+	var adminAddress string
+	for until := time.Now().Add(2 * time.Second); time.Now().Before(until); {
+		data, err := os.ReadFile(filepath.Join(cfg.OutputDir, "admin"))
+		if err == nil {
+			adminAddress = string(data)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if adminAddress == "" {
+		t.Fatal("admin endpoint did not become ready")
+	}
+	external := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{99}, 32))
+	pub := types.PublicKey(external[32:])
+	tx, err := crypt.SignTransaction(types.Transaction{ChainID: cfg.ChainID, Sender: pub, TargetKey: hex.EncodeToString(pub[:]) + "/live", Value: []byte("pending"), Nonce: 1}, external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientCtx, stopClient := context.WithTimeout(context.Background(), time.Second)
+	_, err = SubmitTransaction(clientCtx, peers[0].Address, tx)
+	stopClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(path string, target any) int {
+		t.Helper()
+		response, err := http.Get("http://" + adminAddress + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if target != nil && json.NewDecoder(response.Body).Decode(target) != nil {
+			t.Fatal("invalid admin JSON")
+		}
+		return response.StatusCode
+	}
+	var pool struct {
+		Count        int
+		Transactions []pendingTransaction
+	}
+	if status := get("/mempool", &pool); status != http.StatusOK || pool.Count != 1 || len(pool.Transactions) != 1 || pool.Transactions[0].Transaction.Nonce != 1 {
+		t.Fatalf("unexpected mempool response: status=%d count=%d", status, pool.Count)
+	}
+	var ledgerView struct {
+		Height uint64
+		Count  int
+	}
+	if status := get("/ledger?from=1&limit=10", &ledgerView); status != http.StatusOK || ledgerView.Height != 0 || ledgerView.Count != 0 {
+		t.Fatalf("unexpected ledger response: status=%d height=%d count=%d", status, ledgerView.Height, ledgerView.Count)
+	}
+	var statusView struct {
+		NodeID      int
+		MempoolSize int
+	}
+	if status := get("/status", &statusView); status != http.StatusOK || statusView.NodeID != 0 || statusView.MempoolSize != 1 {
+		t.Fatalf("unexpected status response: %d %+v", status, statusView)
+	}
+	request, err := http.NewRequest(http.MethodPost, "http://"+adminAddress+"/mempool", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status=%d, want 405", response.StatusCode)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

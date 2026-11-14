@@ -101,6 +101,9 @@ func (n *Runtime) Start() error {
 }
 func (n *Runtime) StateRoot() (types.Hash, error) { return n.engine.State().Root(n.chain) }
 func (n *Runtime) Status() cons.Status            { return n.engine.Status() }
+func (n *Runtime) MempoolSnapshot() []types.Transaction {
+	return n.pool.Snapshot()
+}
 func (n *Runtime) send(peer int, m network.Message) error {
 	if n.silent {
 		return nil

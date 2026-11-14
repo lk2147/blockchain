@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,6 +129,7 @@ type received struct {
 	frame *pb.Envelope
 	done  chan error
 	tx    *types.Transaction
+	query chan runtimeSnapshot
 }
 type arrival struct {
 	window uint64
@@ -513,11 +515,20 @@ func runWithNode(parent context.Context, c Config, makeNode func(*process) (loca
 	pb.RegisterTransportServer(server, p)
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
+	adminListener, err := net.Listen("tcp", c.AdminAddress)
+	if err != nil {
+		server.Stop()
+		return err
+	}
+	adminServer := &http.Server{Handler: p.adminHandler(), ReadHeaderTimeout: 2 * time.Second, IdleTimeout: 30 * time.Second}
+	adminErr := make(chan error, 1)
+	go func() { adminErr <- adminServer.Serve(adminListener) }()
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go p.sender(&wg)
 	defer func() {
 		cancel()
+		_ = adminServer.Close()
 		server.Stop()
 		wg.Wait()
 		p.streamWG.Wait()
@@ -527,7 +538,7 @@ func runWithNode(parent context.Context, c Config, makeNode func(*process) (loca
 	}()
 	p.streamWG.Add(1)
 	go func() { defer p.streamWG.Done(); p.gossip.connect() }()
-	p.Record(network.Event{Node: c.NodeID, Peer: -1, Event: "listen", Reason: fmt.Sprintf("pid=%d address=%s", os.Getpid(), listener.Addr())})
+	p.Record(network.Event{Node: c.NodeID, Peer: -1, Event: "listen", Reason: fmt.Sprintf("pid=%d address=%s admin=%s", os.Getpid(), listener.Addr(), adminListener.Addr())})
 	p.Record(network.Event{Node: c.NodeID, Peer: -1, Event: "behavior", Reason: c.Behavior})
 	start := func() error {
 		p.started = true
@@ -547,6 +558,9 @@ func runWithNode(parent context.Context, c Config, makeNode func(*process) (loca
 		return err
 	}
 	if err = os.WriteFile(filepath.Join(c.OutputDir, "ready"), []byte(listener.Addr().String()), 0600); err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(c.OutputDir, "admin"), []byte(adminListener.Addr().String()), 0600); err != nil {
 		return err
 	}
 	for {
@@ -581,8 +595,26 @@ func runWithNode(parent context.Context, c Config, makeNode func(*process) (loca
 				return err
 			}
 			return fmt.Errorf("gRPC server unexpectedly stopped")
+		case err := <-adminErr:
+			timer.Stop()
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				return err
+			}
+			return fmt.Errorf("admin HTTP server unexpectedly stopped")
 		case r := <-p.in:
 			timer.Stop()
+			if r.query != nil {
+				snapshot := runtimeSnapshot{}
+				reader, ok := p.runtime.(interface{ MempoolSnapshot() []types.Transaction })
+				if !ok {
+					snapshot.err = fmt.Errorf("mempool inspection unavailable for this node runtime")
+				} else {
+					snapshot.transactions = reader.MempoolSnapshot()
+					snapshot.root, snapshot.err = p.runtime.StateRoot()
+				}
+				r.query <- snapshot
+				continue
+			}
 			if r.tx != nil {
 				if !p.started {
 					err = network.Reject(fmt.Errorf("node awaiting experiment start"))

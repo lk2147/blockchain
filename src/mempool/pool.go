@@ -105,4 +105,27 @@ func (p *Pool) Prune(s state.State) {
 		}
 	}
 }
+
+// Snapshot returns a deterministic deep copy for read-only observation. The
+// node owner loop calls it, so inspection cannot race admission or pruning.
+func (p *Pool) Snapshot() []types.Transaction {
+	entries := make([]entry, 0, len(p.entries))
+	for _, e := range p.entries {
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		a, b := entries[i].tx, entries[j].tx
+		if c := bytes.Compare(a.Sender[:], b.Sender[:]); c != 0 {
+			return c < 0
+		}
+		return a.Nonce < b.Nonce
+	})
+	out := make([]types.Transaction, len(entries))
+	for i, e := range entries {
+		out[i] = e.tx
+		out[i].Value = append([]byte(nil), e.tx.Value...)
+	}
+	return out
+}
+
 func (p *Pool) Contains(id types.Hash) bool { _, ok := p.entries[id]; return ok }

@@ -34,7 +34,8 @@ python tests/run_local_cluster.py --run-dir local-runs/demo --run-ms 0 --prepare
 Nếu Go chưa nằm trong PATH, thêm --go D:/tools/golang/bin/go.exe.
 Thư mục mới chứa network.json, key-00.hex đến key-09.hex và node-00.json đến
 node-09.json. Key được sinh bằng crypto/rand; không dùng seed của fault layer.
-Mặc định cần các cổng gRPC 29000-29009 và libp2p 29010-29019.
+Mặc định cần các cổng gRPC 29000-29009, libp2p 29010-29019 và HTTP admin
+29020-29029.
 
 ## Một node trên mỗi terminal
 
@@ -72,6 +73,7 @@ Ví dụ node-00.json:
   "NodeID": 0,
   "NetworkFile": "network.json",
   "Behavior": "honest",
+  "AdminAddress": "127.0.0.1:29020",
   "SendGapMS": 10
 }
 ```
@@ -97,10 +99,106 @@ Các trường có thể thêm khi muốn đổi mặc định:
 | MaxBlockTXs | 128 | Số transaction tối đa trong proposal |
 | MaxBlockBytes | 4177920 | Giới hạn JSON body, chừa chỗ cho envelope dưới giới hạn gRPC 4 MiB |
 | Trace | false | true ghi đầy đủ sự kiện network/protocol để kiểm chứng |
+| AdminAddress | 127.0.0.1:0 | HTTP read-only để xem status, mempool và ledger; `:0` chọn port localhost trống |
 
 PrivateKeyFile và OutputDir mặc định lần lượt là key-NN.hex và node-NN, tính
 tương đối với file config. Đổi config trước khi chạy; không reload trực tiếp.
 Mọi node đều có outbound limit, kể cả dishonest node.
+
+## Tạo một test mới bằng cách copy config
+
+Cách đơn giản nhất là giữ một bộ config sạch làm mẫu, sau đó copy các file đó
+sang một thư mục test mới và chỉ sửa những giá trị muốn thử. Không cần viết lại
+validator list, địa chỉ mạng hoặc key.
+
+### 1. Tạo bộ config mẫu một lần
+
+```text
+python tests/run_local_cluster.py --run-dir local-runs/template-base --run-ms 0 --prepare-only
+```
+
+Không chạy node bằng thư mục `template-base`; giữ nó làm mẫu. Nếu thư mục này đã
+có sẵn thì bỏ qua bước trên.
+
+### 2. Copy sang test mới
+
+Trong File Explorer, tạo một thư mục mới, ví dụ `local-runs/test-delay`, rồi copy
+ba nhóm file sau từ `local-runs/template-base` vào đó:
+
+```text
+network.json
+node-00.json ... node-09.json
+key-00.hex ... key-09.hex
+```
+
+Không copy các thư mục `node-00/` ... `node-09/`, file `stdout-*`, `stderr-*`
+hoặc `node.exe`. Chúng là database/log/kết quả của lần chạy cũ. Mỗi test phải có
+thư mục mới để LevelDB và log không bị trộn hoặc ghi đè.
+
+Các đường dẫn `NetworkFile`, `PrivateKeyFile` và `OutputDir` là đường dẫn tương
+đối, nên vẫn hoạt động sau khi copy mà không cần sửa. Có thể giữ nguyên port nếu
+chỉ chạy một cluster tại một thời điểm. Nếu chạy hai cluster đồng thời thì phải
+đổi toàn bộ `Address` và `GossipAddress` trong `network.json` của một cluster.
+
+### 3. Chỉ sửa value cần kiểm tra
+
+Ví dụ test node 0 là honest node nhưng mọi message do nó khởi phát bị giữ 500ms,
+chỉ cần sửa `node-00.json` thành:
+
+```json
+{
+  "NodeID": 0,
+  "NetworkFile": "network.json",
+  "Behavior": "honest",
+  "SendGapMS": 1,
+  "Trace": true,
+  "Faults": {
+    "Seed": 1,
+    "MinDelayMS": 500,
+    "MaxDelayMS": 500
+  }
+}
+```
+
+Ví dụ test proposer im lặng, chỉ đổi một value trong `node-00.json`:
+
+```json
+"Behavior": "silent_proposer"
+```
+
+Không cần thêm `Faults` nếu test chỉ kiểm tra behavior. Có thể kết hợp `Behavior`
+và `Faults` trong cùng một node. Khi kiểm tra giả định an toàn của Lab01, tổng số
+node có `Behavior` khác `honest` không được vượt quá `f=3`; launcher sẽ kiểm tra
+điều này trước khi chạy.
+
+Nếu muốn các process tự kết thúc, thêm cùng một giá trị `RunForMS`, ví dụ `15000`,
+vào **tất cả** `node-00.json` ... `node-09.json`. Nếu để `0` hoặc bỏ trường này,
+node chạy đến khi nhấn Ctrl+C.
+
+### 4. Chạy test đã copy
+
+Chạy cả cluster:
+
+```text
+python tests/run_local_cluster.py --config-dir local-runs/test-delay
+```
+
+Hoặc chạy mỗi node trong một terminal bằng `--node 0` ... `--node 9`. Trong một
+terminal khác, gửi transaction thật:
+
+```text
+python tests/run_local_cluster.py --config-dir local-runs/test-delay --node 0 --via 9 --submit test-delay --record message --nonce 1
+```
+
+Sau khi các node đã dừng, kiểm tra ledger và state của các honest node:
+
+```text
+python tests/run_local_cluster.py --config-dir local-runs/test-delay --check-only
+```
+
+Muốn tạo test tiếp theo, quay lại copy từ `template-base`, không copy từ một test
+đã chạy. Nhờ vậy mỗi test luôn bắt đầu với mempool rỗng, ledger rỗng và config
+gốc dễ đối chiếu.
 
 ## Gửi transaction thật qua mạng
 
@@ -124,6 +222,82 @@ liên tiếp mới được chọn vào block.
 Các mempool có thể khác nhau tạm thời do network. Validator vẫn kiểm tra toàn
 bộ transaction của proposal ngay cả khi chưa từng thấy nó trong mempool. Nếu
 proposal thất bại, transaction còn chờ; chỉ finalization mới xóa nonce đã dùng.
+
+### Gửi hàng loạt transaction bằng key ngoài validator
+
+Khi cluster đang chạy, lệnh sau tạo một cặp Ed25519 mới bằng `crypto/rand`. Public
+key không thuộc validator set; private key được lưu trong thư mục test và chỉ
+dùng làm client. Sau đó script gửi liên tục 20.000 transaction có nonce 1..20000:
+
+```text
+python tests/send_bulk_transactions.py --config-dir local-runs/test-delay --via 9 --count 20000 --rate 200
+```
+
+`--via 9` phải là một honest node đang chạy. `--rate 200` giới hạn tối đa khoảng
+200 transaction được nhận mỗi giây; dùng `0` để gửi nhanh nhất có thể. Có thể đổi
+kích thước value bằng `--value-size`, tối đa 32768 byte trong script này:
+
+```text
+python tests/send_bulk_transactions.py --config-dir local-runs/test-delay --via 9 --count 15000 --rate 100 --value-size 1024
+```
+
+Mỗi lần chạy script luôn tạo file `external-client-<timestamp>.hex` mới và từ
+chối ghi đè/reuse key cũ. Script kiểm tra public key mới không trùng bất kỳ
+validator nào. Transaction vẫn hợp lệ vì ownership dựa trên sender: target key
+có dạng `<external-public-key>/bulk`; người dùng không cần là validator để gửi
+transaction.
+
+Script chỉ gửi transaction và báo số transaction đã được ingress nhận vào
+mempool; nó không chờ, ép hoặc dự đoán số block. Proposer tự chọn transaction
+theo `MaxBlockTXs`/`MaxBlockBytes`, nên số block phụ thuộc tốc độ consensus,
+network faults và mức đầy của từng proposal. Mặc định 20.000 transaction tương
+đương khoảng 157 block nếu mọi block chứa đủ 128 transaction, nhưng đây chỉ là
+ước lượng. Vì một sender chỉ được đi trước committed nonce tối đa 1024, script tự
+thử lại cùng nonce khi mempool/cửa sổ nonce tạm đầy. Nếu ingress tắt hoặc không
+hồi phục trong 60 giây cho một transaction, script dừng và báo lỗi thay vì lặp
+vô hạn.
+
+## Xem mempool và ledger khi node đang chạy
+
+Mỗi node mở thêm một HTTP endpoint read-only trên loopback. Endpoint này không
+tham gia consensus, không truyền private key và không cho phép sửa state. Snapshot
+mempool được lấy qua owner event-loop của node nên không race với admission/prune;
+ledger được đọc từ chính LevelDB đang mở của node.
+
+Với config mới được tạo bởi launcher, `AdminAddress` của node 0..9 mặc định dùng
+dải port 29020..29029 khi `--base-port` là 29000. Config cũ không có trường này
+sẽ tự chọn một port localhost trống. Trong cả hai trường hợp, địa chỉ thật được
+ghi tại `node-NN/admin` khi node sẵn sàng.
+
+Cách dễ nhất là dùng script Python và chọn node muốn đọc:
+
+```text
+python tests/query_node.py --config-dir local-runs/test-delay --node 9 --view status
+python tests/query_node.py --config-dir local-runs/test-delay --node 9 --view mempool
+python tests/query_node.py --config-dir local-runs/test-delay --node 9 --view ledger
+```
+
+Ledger có thể được phân trang, ví dụ đọc tối đa 10 block bắt đầu từ height 101:
+
+```text
+python tests/query_node.py --config-dir local-runs/test-delay --node 9 --view ledger --from-height 101 --limit 10
+```
+
+Cũng có thể mở trực tiếp bằng browser hoặc HTTP client. Ví dụ nếu file `admin`
+của node 9 chứa `127.0.0.1:29029`:
+
+```text
+http://127.0.0.1:29029/status
+http://127.0.0.1:29029/mempool
+http://127.0.0.1:29029/ledger?from=1&limit=20
+```
+
+`/mempool` trả số lượng, TransactionID và toàn bộ signed transaction đang chờ
+trong RAM. `/ledger` trả height hiện tại và các finalized block/certificate đã
+ghi trên disk. `/status` trả height, mempool size và state root. Kết quả là ảnh
+chụp tại thời điểm request; ngay sau đó consensus có thể chuyển transaction từ
+mempool vào block. Chỉ phương thức GET được chấp nhận. Endpoint bị giới hạn ở
+loopback để phục vụ lab local; nó không phải public blockchain explorer.
 
 ## Dishonest node
 

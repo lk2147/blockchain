@@ -106,3 +106,21 @@ func TestPoolRejectsBadAndBoundedInputs(t *testing.T) {
 		t.Fatal("ignored block byte bound")
 	}
 }
+
+func TestSnapshotIsOrderedAndIsolated(t *testing.T) {
+	p := mempool.New(10, 20000, 2000)
+	var s state.State
+	for _, nonce := range []uint64{3, 1, 2} {
+		if _, err := p.Admit("pool", s, tx(t, nonce)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := p.Snapshot()
+	if len(snapshot) != 3 || snapshot[0].Nonce != 1 || snapshot[1].Nonce != 2 || snapshot[2].Nonce != 3 {
+		t.Fatal("snapshot is not deterministically ordered")
+	}
+	snapshot[0].Value[0] ^= 1
+	if got := p.Snapshot(); string(got[0].Value) != "dummy" {
+		t.Fatal("snapshot exposed mutable mempool storage")
+	}
+}

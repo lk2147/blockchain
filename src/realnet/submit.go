@@ -51,17 +51,39 @@ func (p *process) Submit(ctx context.Context, request *pb.SubmitRequest) (*pb.Su
 // SubmitTransaction is client ingress over a real local gRPC connection.
 // Successful admission does not mean the transaction has finalized.
 func SubmitTransaction(ctx context.Context, address string, tx types.Transaction) (types.Hash, error) {
-	var zero types.Hash
+	client, err := NewTransactionClient(address)
+	if err != nil {
+		return types.Hash{}, err
+	}
+	defer client.Close()
+	return client.Submit(ctx, tx)
+}
+
+// TransactionClient reuses one gRPC connection for clients that submit many
+// transactions. It is client ingress only; validators still propagate accepted
+// transactions to peers through GossipSub.
+type TransactionClient struct {
+	conn   *grpc.ClientConn
+	client pb.TransportClient
+}
+
+func NewTransactionClient(address string) (*TransactionClient, error) {
 	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return zero, err
+		return nil, err
 	}
-	defer conn.Close()
+	return &TransactionClient{conn: conn, client: pb.NewTransportClient(conn)}, nil
+}
+
+func (c *TransactionClient) Close() error { return c.conn.Close() }
+
+func (c *TransactionClient) Submit(ctx context.Context, tx types.Transaction) (types.Hash, error) {
+	var zero types.Hash
 	b, err := json.Marshal(tx)
 	if err != nil {
 		return zero, err
 	}
-	reply, err := pb.NewTransportClient(conn).Submit(ctx, &pb.SubmitRequest{Transaction: b})
+	reply, err := c.client.Submit(ctx, &pb.SubmitRequest{Transaction: b})
 	if err != nil {
 		return zero, err
 	}
